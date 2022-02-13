@@ -11,17 +11,18 @@ BASEINCLUDE    = ['#include']
 BASELIB        = ['dl', 'm', 'pthread', 'gomp']
 EIGENINCLUDE   = ['/usr/include/eigen3']
 OEXRINCLUDE    = ['/usr/include/OpenEXR']
-OEXRLIB        = ['Half', 'IlmImf', 'z']
+OEXRLIB        = ['z']
 PNGLIB         = ['png']
 JPEGLIB        = ['jpeg']
 XERCESINCLUDE  = []
 XERCESLIB      = ['xerces-c']
-GLLIB          = ['GL', 'GLU', 'GLEWmx', 'Xxf86vm', 'X11']
+GLLIB =          ['GL', 'GLU', 'GLEW', 'Xxf86vm', 'X11']
 GLFLAGS        = ['-DGLEW_MX']
 BOOSTLIB       = ['boost_system', 'boost_filesystem', 'boost_thread']
 COLLADAINCLUDE = ['/usr/include/collada-dom2.4', '/usr/include/collada-dom2.4/1.4']
 COLLADALIB     = ['collada-dom2.4-dp']
 FFTWLIB        = ['fftw3_threads', 'fftw3']
+QTDIR = '/usr'
 
 # The following runs a helper script to search for installed Python
 # packages that have a Boost Python library of matching version.
@@ -33,3 +34,4 @@ import sys, os
 sys.path.append(os.path.abspath('../data/scons'))
 from detect_python import detect_python
 locals().update(detect_python())
+

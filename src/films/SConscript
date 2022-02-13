@@ -1,13 +1,13 @@
 Import('env', 'plugins')
 
 filmEnv = env.Clone()
-if filmEnv.has_key('OEXRLIBDIR'):
+if filmEnv.get('OEXRLIBDIR'):
         filmEnv.Prepend(LIBPATH=env['OEXRLIBDIR'])
-if filmEnv.has_key('OEXRINCLUDE'):
+if filmEnv.get('OEXRINCLUDE'):
         filmEnv.Prepend(CPPPATH=env['OEXRINCLUDE'])
-if filmEnv.has_key('OEXRFLAGS'):
+if filmEnv.get('OEXRFLAGS'):
         filmEnv.Prepend(CPPFLAGS=env['OEXRFLAGS'])
-if filmEnv.has_key('OEXRLIB'):
+if filmEnv.get('OEXRLIB'):
         filmEnv.Prepend(LIBS=env['OEXRLIB'])
 
 plugins += filmEnv.SharedLibrary('mfilm', ['mfilm.cpp', 'cnpy.cpp'])

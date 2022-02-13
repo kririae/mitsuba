@@ -22,6 +22,7 @@
 #include <mitsuba/core/sched.h>
 #include <mitsuba/core/lrucache.h>
 #include <fstream>
+#include <boost/bind.hpp>
 
 MTS_NAMESPACE_BEGIN
 

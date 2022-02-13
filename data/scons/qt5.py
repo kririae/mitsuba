@@ -44,7 +44,7 @@ import SCons.Scanner
 import SCons.Tool
 import SCons.Util
 
-class ToolQtWarning(SCons.Warnings.Warning):
+class ToolQtWarning(SCons.Warnings.SConsWarning):
         pass
 
 class GeneratedMocFileNotIncluded(ToolQtWarning):
@@ -230,7 +230,7 @@ def generate(env):
                         '.exe',
                 ]
                 triedPaths = []
-                for suffix in suffixes :
+                for suffix in suffixes:
                         fullpath = os.path.join(qtdir,'bin',command + suffix)
                         if os.access(fullpath, os.X_OK) :
                                 return fullpath
@@ -436,7 +436,7 @@ def enable_modules(self, modules, debug=False, crosscompiling=False) :
                 try : self.AppendUnique(CPPDEFINES=moduleDefines[module])
                 except: pass
         debugSuffix = ''
-        if (sys.platform=='darwin' or sys.platform.startswith('linux2')) and not crosscompiling :
+        if (sys.platform=='darwin' or sys.platform.startswith('linux')) and not crosscompiling :
                 if debug : debugSuffix = '_debug'
                 for module in modules :
                         if module not in pclessModules : continue
