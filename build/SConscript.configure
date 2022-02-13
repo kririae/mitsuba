@@ -124,6 +124,8 @@ if 'OEXRINCLUDE' in env:
         env.Prepend(CPPPATH=env['OEXRINCLUDE'])
 if 'OEXRLIBDIR' in env:
         env.Prepend(LIBPATH=env['OEXRLIBDIR'])
+if 'OEXRLIB' in env:
+        env.Prepend(LIBS=env['OEXRLIB'])
 if 'EIGENINCLUDE' in env:
         env.Prepend(CPPPATH=env['EIGENINCLUDE'])
 
@@ -191,7 +193,7 @@ if not conf.CheckCHeader(['stdio.h', 'jpeglib.h']):
 else:
         env.Append(CPPDEFINES = [['MTS_HAS_LIBJPEG', 1]] )
 
-if not conf.CheckCXXHeader('ImfRgba.h'):
+if not conf.CheckCXXHeader(['ImfRgba.h']):
         print('OpenEXR is missing (install libopenexr-dev for OpenEXR I/O support)')
 else:
         env.Append(CPPDEFINES = [['MTS_HAS_OPENEXR', 1]] )

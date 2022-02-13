@@ -1,4 +1,6 @@
-<scene version="0.5.0">
+<?xml version="1.0" encoding="utf-8"?>
+
+<scene version="0.6.0">
 	<medium id="medium" type="homogeneous">
 		<spectrum name="sigmaS" value="0"/>
 		<spectrum name="sigmaA" value="1"/>
@@ -8,19 +10,20 @@
 		<transform name="toWorld">
 			<translate z="-1"/>
 		</transform>
+
 		<bsdf type="diffuse"/>
 
 		<sensor type="irradiancemeter"/>
 	</shape>
 
 	<shape type="disk">
-		<ref id="medium" name="exterior"/>
+		<ref name="exterior" id="medium"/>
 	</shape>
 
 	<shape type="disk">
 		<boolean name="flipNormals" value="true"/>
-		<bsdf type="diffuse"/>
 
+		<bsdf type="diffuse"/>
 		<transform name="toWorld">
 			<translate z="1"/>
 		</transform>
