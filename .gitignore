@@ -31,7 +31,7 @@ dist
 \.gdb_history
 
 # Dependencies
-dependencies
+# dependencies
 
 # OSX binaries and byproducts
 Mitsuba.app
