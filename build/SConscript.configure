@@ -245,7 +245,7 @@ if sys.platform == 'win32':
         if not conf.CheckCHeader('GL/glew.h'):
                 print('GLEW headers are missing!')
                 Exit(1)
-elif sys.platform == 'linux':
+elif sys.platform.startswith('linux'):
         if not (conf.CheckCHeader('GL/gl.h') and conf.CheckCHeader('GL/glu.h') and conf.CheckCHeader(['GL/gl.h', 'GL/glext.h'])):
                 print('OpenGL headers are missing!')
                 Exit(1)
@@ -266,7 +266,7 @@ elif sys.platform == 'darwin':
         if not conf.CheckCHeader('OpenGL/glew.h'):
                 print('GLEW headers are missing!')
                 Exit(1)
-if sys.platform == 'linux':
+if sys.platform.startswith('linux'):
         if not (conf.CheckCHeader(['X11/Xlib.h', 'X11/extensions/xf86vmode.h'])):
                 print('X Video Mode selection library headers are missing! (Install libxxf86vm-dev)')
                 Exit(1)
