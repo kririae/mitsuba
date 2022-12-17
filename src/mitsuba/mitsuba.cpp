@@ -114,6 +114,7 @@ public:
         while (!m_flag->get()) {
             m_flag->wait(m_timeout * 1000);
             renderQueue->flush();
+        
         }
     }
 

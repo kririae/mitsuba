@@ -29,7 +29,7 @@ MTS_NAMESPACE_BEGIN
  * \headerfile mitsuba/core/ref.h mitsuba/mitsuba.h
  * \brief Reference counting helper
  *
- * The \a ref refeference template is a simple wrapper to store a
+ * The \a ref reference template is a simple wrapper to store a
  * pointer to an object. It takes care of increasing and decreasing
  * the reference count of the object. When the last reference goes
  * out of scope, the associated object will be deallocated.
@@ -47,6 +47,7 @@ public:
 
     /// Copy-constructor
     ref(const ref &pRef) : m_ptr(pRef.m_ptr) { if (m_ptr) ((Object *) m_ptr)->incRef(); }
+    // ref(ref &&pRef) : m_ptr(pRef.m_ptr) { pRef.m_ptr = nullptr; }
 
     /// Destroy this reference
     ~ref() { if (m_ptr) ((Object *) m_ptr)->decRef(); }

@@ -48,3 +48,10 @@ mitsuba.*.log
 .settings
 .cproject
 .project
+
+# compiler info
+compile_commands.json
+mitsuba.krr-desktop.log
+.vscode/
+.idea/
+.cache/
