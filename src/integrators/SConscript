@@ -23,6 +23,9 @@ plugins += env.SharedLibrary('motion', ['misc/motion.cpp'])
 # Depth Integrator
 plugins += env.SharedLibrary('myIntegrator', ['myIntegrator.cpp'])
 
+# Guided Integrator
+plugins += env.SharedLibrary('guidedpath', ['path/guided_path.cpp'])
+
 # Bidirectional techniques
 bidirEnv = env.Clone()
 bidirEnv.Append(LIBS=['mitsuba-bidir'])
