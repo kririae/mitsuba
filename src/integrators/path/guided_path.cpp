@@ -1,3 +1,4 @@
+#include <mitsuba/render/guiding.h>
 #include <mitsuba/render/renderproc.h>
 #include <mitsuba/render/scene.h>
 
@@ -128,6 +129,12 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
 
       /* Estimate the direct illumination if this is requested */
       DirectSamplingRecord dRec(its);
+      // TODO: use BSDFSamplingRecord for now, then transform to
+      // GuidingSamplingRecord
+      // gSamplerData is to be acquired from KD-Tree
+      auto gSamplerData =
+          BSDFGuidingSamplerData::MakeBSDFGuidingSamplerData(its, rRec.sampler);
+      auto gSampler = BSDFGuidingSampler(gSamplerData);
 
       if ((rRec.type & RadianceQueryRecord::EDirectSurfaceRadiance) &&
           (bsdf->getType() & BSDF::ESmooth)) {
@@ -148,14 +155,19 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
               (!m_strictNormals ||
                dot(its.geoFrame.n, dRec.d) * Frame::cosTheta(bRec.wo) > 0)) {
             /* Calculate prob. of having generated that direction
-               using BSDF sampling */
+               using importance sampling */
+#if 0
             Float bsdfPdf =
                 (emitter->isOnSurface() && dRec.measure == ESolidAngle)
                     ? bsdf->pdf(bRec)
                     : 0;
+#endif
+            Float sPdf = (emitter->isOnSurface() && dRec.measure == ESolidAngle)
+                             ? gSampler.pdf(DirectionSamplingRecord{dRec.d})
+                             : 0;
 
             /* Weight using the power heuristic */
-            Float weight = miWeight(dRec.pdf, bsdfPdf);
+            Float weight = miWeight(dRec.pdf, sPdf);
             Li += throughput * value * bsdfVal * weight;
           }
         }
@@ -168,7 +180,10 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
       /* Sample BSDF * cos(theta) */
       Float              bsdfPdf;
       BSDFSamplingRecord bRec(its, rRec.sampler, ERadiance);
-      Spectrum bsdfWeight = bsdf->sample(bRec, bsdfPdf, rRec.nextSample2D());
+      // TODO: use BSDFSamplingRecord for now, then transform to
+      // GuidingSamplingRecord
+      Spectrum bsdfWeight = gSampler.sample(bRec, bsdfPdf, rRec.nextSample2D());
+      // Spectrum bsdfWeight = bsdf->sample(bRec, bsdfPdf, rRec.nextSample2D());
       if (bsdfWeight.isZero()) break;
 
       scattered |= bRec.sampledType != BSDF::ENull;
@@ -219,6 +234,9 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
         const Float lumPdf = (!(bRec.sampledType & BSDF::EDelta))
                                  ? scene->pdfEmitterDirect(dRec)
                                  : 0;
+        /* Here bsdf/pdf is already merged into throughput. cos \theta' is
+           merged into value. If this branch is not executed, its ok because it
+           can be viewed as the estimator evaluates to zero */
         Li += throughput * value * miWeight(bsdfPdf, lumPdf);
       }
 

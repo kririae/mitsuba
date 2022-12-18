@@ -4,6 +4,11 @@
 
 #include <mitsuba/core/kdtree.h>
 #include <mitsuba/core/util.h>
+#include <mitsuba/render/bsdf.h>
+#include <mitsuba/render/sampler.h>
+#include <mitsuba/render/shape.h>
+
+#include <boost/variant.hpp>
 
 MTS_NAMESPACE_BEGIN
 
@@ -54,13 +59,75 @@ struct GuidingSampleData {
   Float    theta, phi;  //!< Spherical direction
 };
 
-/// Internal data used by \ref GMM
-struct GmmData {};
-
 /// The sample data structure used by both KD-Tree and GmmDistribution
 struct GuidingSample : public SimpleKDNode<Point3f, GuidingSampleData> {};
 
-struct GMM : public SimpleKDNode<Point3f, GmmData> {};
+struct LocalGuidingSamplerBase {
+  LocalGuidingSamplerBase() {}
+  virtual ~LocalGuidingSamplerBase() {}
+
+  virtual void     addSample(const GuidingSample& sample)   = 0;
+  virtual Float    pdf(const DirectionSamplingRecord& dRec) = 0;
+  virtual Spectrum sample(BSDFSamplingRecord& dRec, Float& outPdf,
+                          const Point2& sample)             = 0;
+};
+
+struct BSDFGuidingSamplerData {
+  // boost::variant<Intersection, Normal> data;
+  Intersection its;
+  Sampler*     sampler;
+
+  static FINLINE BSDFGuidingSamplerData
+  MakeBSDFGuidingSamplerData(const Intersection& _its, Sampler* _sampler) {
+    return BSDFGuidingSamplerData{.its = _its, .sampler = _sampler};
+  }
+};
+
+struct BSDFGuidingSampler : public LocalGuidingSamplerBase,
+                            SimpleKDNode<Point3, BSDFGuidingSamplerData> {
+  /// The local sampler can be initialized with a series of samples
+  /// Here accept nothing
+  BSDFGuidingSampler(BSDFGuidingSamplerData& data)
+      : LocalGuidingSamplerBase(), data(data) {}
+  virtual ~BSDFGuidingSampler() {}
+
+  /// Do nothing here
+  virtual void addSample(const GuidingSample& sample) {}
+
+  /// Calculate the PDF given a DirectionSamplingRecord from e.g., direct
+  /// lighting
+  virtual Float pdf(const DirectionSamplingRecord& dRec) {
+    const auto& its  = data.its;
+    const auto& bsdf = its.getBSDF();
+
+    /* Allocate a record for querying the BSDF */
+    BSDFSamplingRecord bRec(its, its.toLocal(dRec.d), ERadiance);
+    return bsdf == nullptr ? 0 : bsdf->pdf(bRec);
+  }
+
+  /// Provide exactly the same interface as
+  virtual Spectrum sample(BSDFSamplingRecord& bRec, Float& outPdf,
+                          const Point2& sample) {
+    const auto& its  = data.its;
+    const BSDF* bsdf = its.getBSDF();
+
+    Spectrum bsdfWeight = bsdf->sample(bRec, outPdf, sample);
+    return bsdfWeight;
+  }
+
+  BSDFGuidingSamplerData& data;
+};
+
+struct SHGuidingSamplerData {};
+struct SHGuidingSampler : public LocalGuidingSamplerBase,
+                          SimpleKDNode<Point3, SHGuidingSamplerData> {};
+
+#if 0
+/// Internal data used by \ref GMM
+struct GmmData {};
+
+struct GMM : public SimpleKDNode<Point3f, GmmData>, LocalGuidingSamplerBase {};
+#endif
 
 /**
  * @brief The implementation of "On-line Learning of Parametric Mixture Models
@@ -76,25 +143,48 @@ struct GMM : public SimpleKDNode<Point3f, GmmData> {};
  * 3. Add samples: we add samples on-the-fly, and the samples are added to
  *   adjacent distributions
  */
+template <typename _LocalSamplerType>
 class SpatialGuidingSampler {
  public:
-  using STree = PointKDTree<GuidingSample>;
-  using DTree = PointKDTree<GMM>;
+  using LocalSamplerType = _LocalSamplerType;
+  using STree            = PointKDTree<GuidingSample>;
+  using DTree            = PointKDTree<LocalSamplerType>;
+
+  /// Phases
+  enum class EOpVariant {
+    /// Training phase. Simply adding the samples
+    EAddSample = 1,
+    /// Eval phase. Build the distribution on-the-fly
+    EAddToDist = 2,
+
+    ESampleDist = EAddSample | EAddToDist
+  };
 
   SpatialGuidingSampler(const SpatialGuidingConfig& cfg) : m_cfg(cfg) {}
   virtual ~SpatialGuidingSampler() {}
 
-  void train() {}
-  void eval() {}
+  /// Add samples without querying the DTree
+  /// \see \ref EPhase
+  void train() {
+    m_op = EOpVariant::EAddSample;
+    if (m_first_round) m_first_round = false;
+  }
+
+  /// Add samples and query the DTree
+  /// \see \ref EPhase
+  void eval() { m_op = EOpVariant::ESampleDist; }
 
   void addSample(const GuidingSample& sample) {}
   void addNSample(const std::vector<GuidingSample>& samples) {}
 
  private:
-  SpatialGuidingConfig m_cfg;
+  SpatialGuidingConfig m_cfg{};
 
-  STree m_stree;
-  DTree m_dtree;
+  STree m_stree{};
+  DTree m_dtree{};
+
+  bool       m_first_round{true};
+  EOpVariant m_op{EOpVariant::EAddSample};
 };
 
 MTS_NAMESPACE_END
