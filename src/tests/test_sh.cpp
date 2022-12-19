@@ -27,7 +27,7 @@ public:
     MTS_DECLARE_TEST(test01_shRotation)
     MTS_DECLARE_TEST(test02_shSampler)
     MTS_END_TESTCASE()
-
+    
     void test01_shRotation() {
         /* Generate a random SH expansion, rotate it and
            spot-check 100 times against the original evaluated

@@ -88,9 +88,8 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
     ray.mint = Epsilon;
 
     Spectrum throughput(1.0f);
-    Float    eta = 1.0f;
 
-    while (rRec.depth <= m_maxDepth || m_maxDepth < 0) {
+    while (true) {
       if (!its.isValid()) {
         /* If no intersection could be found, potentially return
            radiance from a environment luminaire if it exists */
@@ -107,11 +106,6 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
           (rRec.type & RadianceQueryRecord::EEmittedRadiance) &&
           (!m_hideEmitters || scattered))
         Li += throughput * its.Le(-ray.d);
-
-      /* Include radiance from a subsurface scattering model if requested */
-      if (its.hasSubsurface() &&
-          (rRec.type & RadianceQueryRecord::ESubsurfaceRadiance))
-        Li += throughput * its.LoSub(scene, rRec.sampler, -ray.d, rRec.depth);
 
       if ((rRec.depth >= m_maxDepth && m_maxDepth > 0) ||
           (m_strictNormals &&
@@ -223,7 +217,6 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
       /* Keep track of the throughput and relative
          refractive index along the path */
       throughput *= bsdfWeight;
-      eta *= bRec.eta;
 
       /* If a luminaire was hit, estimate the local illumination and
          weight using the power heuristic */
@@ -240,27 +233,9 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
         Li += throughput * value * miWeight(bsdfPdf, lumPdf);
       }
 
-      /* ==================================================================== */
-      /*                         Indirect illumination                        */
-      /* ==================================================================== */
-
-      /* Set the recursive query type. Stop if no surface was hit by the
-         BSDF sample or if indirect illumination was not requested */
-      if (!its.isValid() ||
-          !(rRec.type & RadianceQueryRecord::EIndirectSurfaceRadiance))
-        break;
-      rRec.type = RadianceQueryRecord::ERadianceNoEmission;
-
-      if (rRec.depth++ >= m_rrDepth) {
-        /* Russian roulette: try to keep path weights equal to one,
-           while accounting for the solid angle compression at refractive
-           index boundaries. Stop with at least some probability to avoid
-           getting stuck (e.g. due to total internal reflection) */
-
-        Float q = std::min(throughput.max() * eta * eta, (Float)0.95f);
-        if (rRec.nextSample1D() >= q) break;
-        throughput /= q;
-      }
+      /// NO INDIRECT LIGHTING NOW
+      // ANYWAY BREAK
+      break;
     }
 
     return Li;

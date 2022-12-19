@@ -3,6 +3,7 @@
 #define __MITSUBA_RENDER_GUIDING_H__
 
 #include <mitsuba/core/kdtree.h>
+#include <mitsuba/core/shvector.h>
 #include <mitsuba/core/util.h>
 #include <mitsuba/render/bsdf.h>
 #include <mitsuba/render/sampler.h>
@@ -19,22 +20,23 @@ MTS_NAMESPACE_BEGIN
  */
 struct RandomVariableTransform {
   FINLINE static void solidAngleToUv(const Vector3f& inVector,
-                                     const Float inPdf, Point2f& outUv,
+                                     const Float inPdf, Point2& outUv,
                                      Float& outPdf) {
     const Vector3f& normalizedVector = normalize(inVector);
 
     // Calculate theta phi from solidAngle presented in Vector3f
     outUv = toSphericalCoordinates(normalizedVector);
+    outUv.x /= M_PI;
     outUv.y /= (2 * M_PI);  // normalize to [0, 1]^2
 
-    outPdf =
-        inPdf * sin(outUv.x) * 2 * M_PI;  // p(u, v) = 2 * \pi * p(\theta, \phi)
+    outPdf = inPdf * sin(outUv.x) * 2 * M_PI *
+             M_PI;  // p(u, v) = 2 * \pi^2 * p(\theta, \phi)
   }
 
-  FINLINE static void uvToSolidAngle(const Vector2f& inUv, const Float inPdf,
+  FINLINE static void uvToSolidAngle(const Point2& inUv, const Float inPdf,
                                      Vector3f& outVector, Float& outPdf) {
-    outVector = sphericalDirection(inUv.x, inUv.y * 2 * M_PI);
-    outPdf    = inPdf / (sin(inUv.x) * 2 * M_PI);
+    outVector = sphericalDirection(inUv.x * M_PI, inUv.y * 2 * M_PI);
+    outPdf    = inPdf / (sin(inUv.x) * 2 * M_PI * M_PI);
   }
 };
 
@@ -60,8 +62,16 @@ struct GuidingSampleData {
 };
 
 /// The sample data structure used by both KD-Tree and GmmDistribution
-struct GuidingSample : public SimpleKDNode<Point3f, GuidingSampleData> {};
+struct GuidingSample : public SimpleKDNode<Point3f, GuidingSampleData> {
+  GuidingSample(GuidingSampleData& data) : data(data) {}
+  ~GuidingSample() {}
 
+  GuidingSampleData& data;
+};
+
+/* ==================================================================== */
+/*                         Local Guiding Sampler                        */
+/* ==================================================================== */
 struct LocalGuidingSamplerBase {
   LocalGuidingSamplerBase() {}
   virtual ~LocalGuidingSamplerBase() {}
@@ -86,7 +96,7 @@ struct BSDFGuidingSamplerData {
 struct BSDFGuidingSampler : public LocalGuidingSamplerBase,
                             SimpleKDNode<Point3, BSDFGuidingSamplerData> {
   /// The local sampler can be initialized with a series of samples
-  /// Here accept nothing
+  /// accept nothing
   BSDFGuidingSampler(BSDFGuidingSamplerData& data)
       : LocalGuidingSamplerBase(), data(data) {}
   virtual ~BSDFGuidingSampler() {}
@@ -105,7 +115,7 @@ struct BSDFGuidingSampler : public LocalGuidingSamplerBase,
     return bsdf == nullptr ? 0 : bsdf->pdf(bRec);
   }
 
-  /// Provide exactly the same interface as
+  /// Provide exactly the same interface as BSDF
   virtual Spectrum sample(BSDFSamplingRecord& bRec, Float& outPdf,
                           const Point2& sample) {
     const auto& its  = data.its;
@@ -118,9 +128,64 @@ struct BSDFGuidingSampler : public LocalGuidingSamplerBase,
   BSDFGuidingSamplerData& data;
 };
 
-struct SHGuidingSamplerData {};
+struct SHGuidingSamplerData {
+  Intersection its;
+  Sampler*     sampler;
+  SHVector     shvec{8};
+
+  // TODO: Factory function
+};
+
 struct SHGuidingSampler : public LocalGuidingSamplerBase,
-                          SimpleKDNode<Point3, SHGuidingSamplerData> {};
+                          SimpleKDNode<Point3, SHGuidingSamplerData> {
+  SHGuidingSampler(SHGuidingSamplerData& data)
+      : LocalGuidingSamplerBase(), data(data) {}
+  virtual ~SHGuidingSampler() {}
+
+  /// Project the sample as a delta-distribution onto the shvec
+  virtual void addSample(const GuidingSample& sample) {
+    auto& shvec = data.shvec;
+    shvec.addDelta(sample.data.weight.getLuminance(), sample.data.theta,
+                   sample.data.phi);
+    shvec.normalize();
+  }
+
+  /// Calculate the PDF given a DirectionSamplingRecord from e.g., direct
+  /// lighting. Note that all values lies in Record are global coordinate
+  virtual Float pdf(const DirectionSamplingRecord& dRec) {
+    // SLog(EError, "PDF cannot be acquired in SHGuidingSampler");
+    // TODO: this method is not correct
+    auto& shvec = data.shvec;
+    return shvec.eval(data.its.toLocal(dRec.d));
+  }
+
+  /// Provide exactly the same interface as bsdf->sample
+  virtual Spectrum sample(BSDFSamplingRecord& bRec, Float& outPdf,
+                          const Point2& sample) {
+    auto&  sampler = getSHSamplerInstance();
+    Point2 sample_ = sample;
+    // the output sample is [0, pi]x[0, 2pi]
+    Float outPdf_ = sampler.warp(data.shvec, sample_);
+
+    // first modify the sample
+    sample_.x /= M_PI;
+    sample_.y /= 2 * M_PI;
+    // then modify the PDF
+    outPdf_ *= (2 * M_PI * M_PI);
+
+    RandomVariableTransform::uvToSolidAngle(sample, outPdf_, bRec.wi, outPdf);
+  }
+
+ protected:
+  static inline SHSampler& getSHSamplerInstance() {
+    /// why
+    static ref<SHSampler> sampler = new SHSampler(8, 12);
+    return *sampler;
+  }
+
+ public:
+  SHGuidingSamplerData& data;
+};
 
 #if 0
 /// Internal data used by \ref GMM
