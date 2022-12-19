@@ -76,10 +76,10 @@ struct LocalGuidingSamplerBase {
   LocalGuidingSamplerBase() {}
   virtual ~LocalGuidingSamplerBase() {}
 
-  virtual void     addSample(const GuidingSample& sample)   = 0;
-  virtual Float    pdf(const DirectionSamplingRecord& dRec) = 0;
-  virtual Spectrum sample(BSDFSamplingRecord& dRec, Float& outPdf,
-                          const Point2& sample)             = 0;
+  virtual void     addSample(const GuidingSample& sample) = 0;
+  virtual Float    pdf(const BSDFSamplingRecord& bRec)    = 0;
+  virtual Spectrum sample(BSDFSamplingRecord& bRec, Float& outPdf,
+                          const Point2& sample)           = 0;
 };
 
 struct BSDFGuidingSamplerData {
@@ -106,12 +106,9 @@ struct BSDFGuidingSampler : public LocalGuidingSamplerBase,
 
   /// Calculate the PDF given a DirectionSamplingRecord from e.g., direct
   /// lighting
-  virtual Float pdf(const DirectionSamplingRecord& dRec) {
+  virtual Float pdf(const BSDFSamplingRecord& bRec) {
     const auto& its  = data.its;
     const auto& bsdf = its.getBSDF();
-
-    /* Allocate a record for querying the BSDF */
-    BSDFSamplingRecord bRec(its, its.toLocal(dRec.d), ERadiance);
     return bsdf == nullptr ? 0 : bsdf->pdf(bRec);
   }
 
@@ -129,20 +126,33 @@ struct BSDFGuidingSampler : public LocalGuidingSamplerBase,
 };
 
 struct SHGuidingSamplerData {
+  static constexpr int bands = 8;
+
   Intersection its;
   Sampler*     sampler;
-  SHVector     shvec{8};
+  SHVector     shvec;
 
   // TODO: Factory function
+  static FINLINE SHGuidingSamplerData
+  MakeSHGuidingSamplerData(const Intersection& _its, Sampler* _sampler) {
+    return SHGuidingSamplerData{
+        .its = _its, .sampler = _sampler, .shvec = SHVector{bands}};
+  }
 };
 
+/// This is not efficient in capturing high-frequency BSDF
 struct SHGuidingSampler : public LocalGuidingSamplerBase,
                           SimpleKDNode<Point3, SHGuidingSamplerData> {
   SHGuidingSampler(SHGuidingSamplerData& data)
-      : LocalGuidingSamplerBase(), data(data) {}
+      : LocalGuidingSamplerBase(), data(data) {
+    data.shvec.addOffset(-data.shvec.findMinimum(16) + 0.1);
+    data.shvec.normalize();
+  }
+
   virtual ~SHGuidingSampler() {}
 
   /// Project the sample as a delta-distribution onto the shvec
+  /// Note: the samples should be local sample
   virtual void addSample(const GuidingSample& sample) {
     auto& shvec = data.shvec;
     shvec.addDelta(sample.data.weight.getLuminance(), sample.data.theta,
@@ -151,35 +161,37 @@ struct SHGuidingSampler : public LocalGuidingSamplerBase,
   }
 
   /// Calculate the PDF given a DirectionSamplingRecord from e.g., direct
-  /// lighting. Note that all values lies in Record are global coordinate
-  virtual Float pdf(const DirectionSamplingRecord& dRec) {
+  /// lighting.
+  virtual Float pdf(const BSDFSamplingRecord& dRec) {
     // SLog(EError, "PDF cannot be acquired in SHGuidingSampler");
     // TODO: this method is not correct
     auto& shvec = data.shvec;
-    return shvec.eval(data.its.toLocal(dRec.d));
+    return shvec.eval(dRec.wo);
   }
 
   /// Provide exactly the same interface as bsdf->sample
   virtual Spectrum sample(BSDFSamplingRecord& bRec, Float& outPdf,
                           const Point2& sample) {
-    auto&  sampler = getSHSamplerInstance();
-    Point2 sample_ = sample;
+    const auto& its     = data.its;
+    const BSDF* bsdf    = its.getBSDF();
+    auto&       sampler = getSHSamplerInstance();
+    Point2      sample_ = sample;
     // the output sample is [0, pi]x[0, 2pi]
-    Float outPdf_ = sampler.warp(data.shvec, sample_);
+    // but the output PDF is already in solidAngle
+    outPdf = sampler.warp(data.shvec, sample_);
 
-    // first modify the sample
-    sample_.x /= M_PI;
-    sample_.y /= 2 * M_PI;
-    // then modify the PDF
-    outPdf_ *= (2 * M_PI * M_PI);
+    // The transformed result lies on local coordinate
+    bRec.wo = sphericalDirection(sample_.x, sample_.y);
 
-    RandomVariableTransform::uvToSolidAngle(sample, outPdf_, bRec.wi, outPdf);
+    Spectrum result = bsdf->eval(bRec) / outPdf;  // already multiplied by cos
+    return result;
   }
 
  protected:
   static inline SHSampler& getSHSamplerInstance() {
     /// why
-    static ref<SHSampler> sampler = new SHSampler(8, 12);
+    static ref<SHSampler> sampler =
+        new SHSampler(SHGuidingSamplerData::bands, 12);
     return *sampler;
   }
 

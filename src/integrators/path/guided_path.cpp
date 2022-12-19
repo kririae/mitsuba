@@ -88,8 +88,9 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
     ray.mint = Epsilon;
 
     Spectrum throughput(1.0f);
+    Float    eta = 1.0f;
 
-    while (true) {
+    while (rRec.depth <= m_maxDepth || m_maxDepth < 0) {
       if (!its.isValid()) {
         /* If no intersection could be found, potentially return
            radiance from a environment luminaire if it exists */
@@ -126,9 +127,25 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
       // TODO: use BSDFSamplingRecord for now, then transform to
       // GuidingSamplingRecord
       // gSamplerData is to be acquired from KD-Tree
+#if 1
       auto gSamplerData =
           BSDFGuidingSamplerData::MakeBSDFGuidingSamplerData(its, rRec.sampler);
       auto gSampler = BSDFGuidingSampler(gSamplerData);
+#else
+      auto gSamplerData =
+          SHGuidingSamplerData::MakeSHGuidingSamplerData(its, rRec.sampler);
+      // project BSDF onto the SH in local coordinate
+      gSamplerData.shvec.project(
+          [&](const Vector3& wo) -> float {
+            // Here, wo is local coordinate
+            BSDFSamplingRecord bRec(its, wo, ERadiance);
+            Float              pdf = bsdf->pdf(bRec);
+            return std::max<mitsuba::Float>(pdf, 0);  // why < 0
+          },
+          8);
+      gSamplerData.shvec.normalize();
+      auto gSampler = SHGuidingSampler(gSamplerData);
+#endif
 
       if ((rRec.type & RadianceQueryRecord::EDirectSurfaceRadiance) &&
           (bsdf->getType() & BSDF::ESmooth)) {
@@ -150,15 +167,17 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
                dot(its.geoFrame.n, dRec.d) * Frame::cosTheta(bRec.wo) > 0)) {
             /* Calculate prob. of having generated that direction
                using importance sampling */
-#if 0
+#if 1
             Float bsdfPdf =
                 (emitter->isOnSurface() && dRec.measure == ESolidAngle)
                     ? bsdf->pdf(bRec)
                     : 0;
 #endif
             Float sPdf = (emitter->isOnSurface() && dRec.measure == ESolidAngle)
-                             ? gSampler.pdf(DirectionSamplingRecord{dRec.d})
+                             ? gSampler.pdf(bRec)
                              : 0;
+
+            if (bsdfPdf > 1) Log(EInfo, "sPdf: %f; bsdfPdf: %f", sPdf, bsdfPdf);
 
             /* Weight using the power heuristic */
             Float weight = miWeight(dRec.pdf, sPdf);
@@ -217,6 +236,7 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
       /* Keep track of the throughput and relative
          refractive index along the path */
       throughput *= bsdfWeight;
+      eta *= bRec.eta;
 
       /* If a luminaire was hit, estimate the local illumination and
          weight using the power heuristic */
@@ -233,9 +253,31 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
         Li += throughput * value * miWeight(bsdfPdf, lumPdf);
       }
 
-      /// NO INDIRECT LIGHTING NOW
-      // ANYWAY BREAK
+#if 1
+      /* ==================================================================== */
+      /*                         Indirect illumination                        */
+      /* ==================================================================== */
+
+      /* Set the recursive query type. Stop if no surface was hit by the
+         BSDF sample or if indirect illumination was not requested */
+      if (!its.isValid() ||
+          !(rRec.type & RadianceQueryRecord::EIndirectSurfaceRadiance))
+        break;
+      rRec.type = RadianceQueryRecord::ERadianceNoEmission;
+
+      if (rRec.depth++ >= m_rrDepth) {
+        /* Russian roulette: try to keep path weights equal to one,
+           while accounting for the solid angle compression at refractive
+           index boundaries. Stop with at least some probability to avoid
+           getting stuck (e.g. due to total internal reflection) */
+
+        Float q = std::min(throughput.max() * eta * eta, (Float)0.95f);
+        if (rRec.nextSample1D() >= q) break;
+        throughput /= q;
+      }
+#else
       break;
+#endif
     }
 
     return Li;
