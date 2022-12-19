@@ -76,10 +76,14 @@ struct LocalGuidingSamplerBase {
   LocalGuidingSamplerBase() {}
   virtual ~LocalGuidingSamplerBase() {}
 
-  virtual void     addSample(const GuidingSample& sample) = 0;
-  virtual Float    pdf(const BSDFSamplingRecord& bRec)    = 0;
+  virtual void addSample(const GuidingSample& sample) = 0;
+  virtual void addSample(const std::vector<GuidingSample>& samples) {
+    for (auto& sample : samples) addSample(sample);
+  }
+
+  virtual Float    pdf(const BSDFSamplingRecord& bRec) = 0;
   virtual Spectrum sample(BSDFSamplingRecord& bRec, Float& outPdf,
-                          const Point2& sample)           = 0;
+                          const Point2& sample)        = 0;
 };
 
 struct BSDFGuidingSamplerData {
@@ -160,11 +164,19 @@ struct SHGuidingSampler : public LocalGuidingSamplerBase,
     shvec.normalize();
   }
 
+  virtual void addSample(const std::vector<GuidingSample>& samples) {
+    auto& shvec = data.shvec;
+    for (auto& sample : samples)
+      shvec.addDelta(sample.data.weight.getLuminance(), sample.data.theta,
+                     sample.data.phi);
+    shvec.normalize();
+  }
+
   /// Calculate the PDF given a DirectionSamplingRecord from e.g., direct
   /// lighting.
   virtual Float pdf(const BSDFSamplingRecord& dRec) {
     // SLog(EError, "PDF cannot be acquired in SHGuidingSampler");
-    // TODO: this method is not correct
+    // TODO: this method is not exactly correct
     auto& shvec = data.shvec;
     return shvec.eval(dRec.wo);
   }
