@@ -2,11 +2,12 @@
 #if !defined(__MITSUBA_RENDER_GUIDING_H__)
 #define __MITSUBA_RENDER_GUIDING_H__
 
-#include <mitsuba/core/kdtree.h>
+#include <mitsuba/core/octree.h>
 #include <mitsuba/core/shvector.h>
 #include <mitsuba/core/util.h>
 #include <mitsuba/render/bsdf.h>
 #include <mitsuba/render/sampler.h>
+#include <mitsuba/render/scene.h>
 #include <mitsuba/render/shape.h>
 
 #include <boost/variant.hpp>
@@ -44,8 +45,8 @@ struct RandomVariableTransform {
  * @brief Configuration passing to \ref SpatialGuidingSampler
  */
 struct SpatialGuidingConfig {
-  SpatialGuidingConfig() {}
-  SpatialGuidingConfig(const Properties& prop) {}
+  SpatialGuidingConfig(Scene& scene) : scene(scene) {}
+  SpatialGuidingConfig(Scene& scene, const Properties& prop) : scene(scene) {}
 
   /// Boolean configurations
   bool m_enabled{false};
@@ -53,6 +54,8 @@ struct SpatialGuidingConfig {
 
   /// Numeric configurations
   std::size_t m_num_photons{0};
+
+  Scene& scene;
 };
 
 /// Internal data used by \ref GuidingSample
@@ -62,7 +65,7 @@ struct GuidingSampleData {
 };
 
 /// The sample data structure used by both KD-Tree and GmmDistribution
-struct GuidingSample : public SimpleKDNode<Point3f, GuidingSampleData> {
+struct GuidingSample {
   GuidingSample(GuidingSampleData& data) : data(data) {}
   ~GuidingSample() {}
 
@@ -97,8 +100,7 @@ struct BSDFGuidingSamplerData {
   }
 };
 
-struct BSDFGuidingSampler : public LocalGuidingSamplerBase,
-                            SimpleKDNode<Point3, BSDFGuidingSamplerData> {
+struct BSDFGuidingSampler : public LocalGuidingSamplerBase {
   /// The local sampler can be initialized with a series of samples
   /// accept nothing
   BSDFGuidingSampler(BSDFGuidingSamplerData& data)
@@ -145,8 +147,7 @@ struct SHGuidingSamplerData {
 };
 
 /// This is not efficient in capturing high-frequency BSDF
-struct SHGuidingSampler : public LocalGuidingSamplerBase,
-                          SimpleKDNode<Point3, SHGuidingSamplerData> {
+struct SHGuidingSampler : public LocalGuidingSamplerBase {
   SHGuidingSampler(SHGuidingSamplerData& data)
       : LocalGuidingSamplerBase(), data(data) {
     data.shvec.addOffset(-data.shvec.findMinimum(16) + 0.1);
@@ -236,8 +237,8 @@ template <typename _LocalSamplerType>
 class SpatialGuidingSampler {
  public:
   using LocalSamplerType = _LocalSamplerType;
-  using STree            = PointKDTree<GuidingSample>;
-  using DTree            = PointKDTree<LocalSamplerType>;
+  using STree            = DynamicOctree<GuidingSample>;
+  using DTree            = DynamicOctree<LocalSamplerType>;
 
   /// Phases
   enum class EOpVariant {
@@ -249,8 +250,14 @@ class SpatialGuidingSampler {
     ESampleDist = EAddSample | EAddToDist
   };
 
-  SpatialGuidingSampler(const SpatialGuidingConfig& cfg) : m_cfg(cfg) {}
+  SpatialGuidingSampler(const SpatialGuidingConfig& cfg)
+      : m_cfg(cfg),
+        m_stree(cfg.scene.getAABB()),
+        m_dtree(cfg.scene.getAABB()) {}
   virtual ~SpatialGuidingSampler() {}
+  SpatialGuidingSampler(const SpatialGuidingSampler&)           = delete;
+  SpatialGuidingSampler(SpatialGuidingSampler&&)                = delete;
+  SpatialGuidingSampler operator=(const SpatialGuidingSampler&) = delete;
 
   /// Add samples without querying the DTree
   /// \see \ref EPhase
@@ -263,14 +270,21 @@ class SpatialGuidingSampler {
   /// \see \ref EPhase
   void eval() { m_op = EOpVariant::ESampleDist; }
 
-  void addSample(const GuidingSample& sample) {}
-  void addNSample(const std::vector<GuidingSample>& samples) {}
+  void addSample(const GuidingSample& sample) {
+    if (m_op & EOpVariant::AddSample) {
+    }
+  }
+
+  void addNSample(const std::vector<GuidingSample>& samples) {
+    // TODO: use this naive implementation for now
+    for (auto& sample : samples) addSample(sample);
+  }
 
  private:
-  SpatialGuidingConfig m_cfg{};
+  const SpatialGuidingConfig& m_cfg;
 
-  STree m_stree{};
-  DTree m_dtree{};
+  STree m_stree;
+  DTree m_dtree;
 
   bool       m_first_round{true};
   EOpVariant m_op{EOpVariant::EAddSample};

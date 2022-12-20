@@ -122,7 +122,7 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
       /*                     Direct illumination sampling                     */
       /* ==================================================================== */
 
-      Li += throughput * DirectIllumination(rRec);
+      Li += throughput * directIllumination(rRec);
 
       /* ==================================================================== */
       /*                            BSDF sampling                             */
@@ -196,8 +196,10 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
   }
 
  private:
+  void addDirectIlluminationSample() {}
+
   /**
-   * @brief DirectIllumination illumination is expected to perform the
+   * @brief directIllumination is expected to perform the
    * integration on light surface. i.e. L_e(p_{i + 1}, -\omega) f(p_i, \omega_i,
    * \omega_o) cos_theta_o / p_\omega(\omega_o). Note that in mitsuba, \omega_o
    * points to light source.
@@ -206,7 +208,7 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
    * @param bsdf
    * @return The value *without* throughput
    */
-  Spectrum DirectIllumination(RadianceQueryRecord& rRec) const {
+  Spectrum directIllumination(RadianceQueryRecord& rRec) const {
     /* do no modify these lines */
     Intersection         its   = rRec.its;
     const Scene*         scene = rRec.scene;
