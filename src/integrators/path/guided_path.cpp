@@ -271,8 +271,10 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
 
     /* ===== Part 2: BSDF Sampling ==== */
     {
+      // Be sure to backup Intersection before any modification
+      Intersection       its_ = its;
       Float              bsdfPdf;
-      BSDFSamplingRecord bRec(its, rRec.sampler, ERadiance);
+      BSDFSamplingRecord bRec(its_, rRec.sampler, ERadiance);
       // TODO: use BSDFSamplingRecord for now, then transform to
       // GuidingSamplingRecord
       Spectrum bsdfWeight = gSampler.sample(bRec, bsdfPdf, rRec.nextSample2D());
@@ -280,8 +282,8 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
       if (bsdfWeight.isZero()) return result;
 
       /* Prevent light leaks due to the use of shading normals */
-      const Vector wo        = its.toWorld(bRec.wo);
-      Float        woDotGeoN = dot(its.geoFrame.n, wo);
+      const Vector wo        = its_.toWorld(bRec.wo);
+      Float        woDotGeoN = dot(its_.geoFrame.n, wo);
       if (m_strictNormals && woDotGeoN * Frame::cosTheta(bRec.wo) <= 0)
         return result;
 
@@ -289,14 +291,14 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
       Spectrum value;
 
       /* Trace a ray in this direction */
-      auto ray = RayDifferential(its.p, wo, INFINITY);
+      auto ray = RayDifferential(its_.p, wo, INFINITY);
 
       /* Evaluate Le in this sampling procedure */
-      if (scene->rayIntersect(ray, its)) {
+      if (scene->rayIntersect(ray, its_)) {
         /* Intersected something - check if it was a luminaire */
-        if (its.isEmitter()) {
-          value = its.Le(-ray.d);
-          dRec.setQuery(ray, its);
+        if (its_.isEmitter()) {
+          value = its_.Le(-ray.d);
+          dRec.setQuery(ray, its_);
           hitEmitter = true;
         }
       } else {
@@ -319,11 +321,14 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
                                  ? scene->pdfEmitterDirect(dRec)
                                  : 0;
         /* Here bsdf/pdf is already merged into throughput. cos \theta' is
-           merged into value. If this branch is not executed, its ok because it
+           merged into value. If this branch is not executed, its_ ok because it
            can be viewed as the estimator evaluates to zero */
         result += bsdfWeight * value * miWeight(bsdfPdf, lumPdf);
       }
     }  // Part 2
+
+    /* ===== Part 2: BSDF Sampling ==== */
+    {}
 
     return result;
   }
