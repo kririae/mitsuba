@@ -122,7 +122,7 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
       /*                     Direct illumination sampling                     */
       /* ==================================================================== */
 
-      Li += throughput * DirectIllumination(rRec, bsdf);
+      Li += throughput * DirectIllumination(rRec);
 
       /* ==================================================================== */
       /*                            BSDF sampling                             */
@@ -144,12 +144,8 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
 
       /* Trace a ray in this direction */
       ray = Ray(its.p, wo, ray.time);
-      if (scene->rayIntersect(ray, its)) {
-        /* Intersected something - check if it was a luminaire */
-        if (its.isEmitter()) break;
-      } else {
-        break;
-      }
+      /* Intersected something - check if it was a luminaire */
+      if (!scene->rayIntersect(ray, its) || its.isEmitter()) break;
 
       /* Keep track of the throughput and relative
          refractive index along the path */
@@ -192,7 +188,7 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
     return pdfA / (pdfA + pdfB);
   }
 
-  inline Float miWeight3(Float pdfA, Float pdfB, Float pdfC) const {
+  inline Float miWeight(Float pdfA, Float pdfB, Float pdfC) const {
     pdfA *= pdfA;
     pdfB *= pdfB;
     pdfC *= pdfC;
@@ -210,12 +206,14 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
    * @param bsdf
    * @return The value *without* throughput
    */
-  Spectrum DirectIllumination(RadianceQueryRecord& rRec,
-                              const BSDF*          bsdf) const {
+  Spectrum DirectIllumination(RadianceQueryRecord& rRec) const {
+    /* do no modify these lines */
+    Intersection         its   = rRec.its;
     const Scene*         scene = rRec.scene;
-    Intersection&        its   = rRec.its;
+    const BSDF*          bsdf  = its.getBSDF();
     DirectSamplingRecord dRec(its);
-    Spectrum             result(0.0f);
+
+    Spectrum result(0.0f);
 
     // TODO: use BSDFSamplingRecord for now, then transform to
     // GuidingSamplingRecord
@@ -258,32 +256,33 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
           (!m_strictNormals ||
            dot(its.geoFrame.n, dRec.d) * Frame::cosTheta(bRec.wo) > 0)) {
         /* Calculate prob. of having generated that direction
-           using importance sampling */
-        Float sPdf = (emitter->isOnSurface() && dRec.measure == ESolidAngle)
-                         ? gSampler.pdf(bRec)
-                         : 0;
+           using importance sampling for both BSDF and localSampler  */
+        Float bsdfPdf = (emitter->isOnSurface() && dRec.measure == ESolidAngle)
+                            ? bsdf->pdf(bRec)
+                            : 0;
+        Float sPdf    = (emitter->isOnSurface() && dRec.measure == ESolidAngle)
+                            ? gSampler.pdf(bRec)
+                            : 0;
 
         /* Weight using the power heuristic */
-        Float weight = miWeight(dRec.pdf, sPdf);
+        // Float weight = miWeight3(dRec.pdf, bsdfPdf, sPdf);
+        Float weight = miWeight(dRec.pdf, bsdfPdf);
         result += value * bsdfVal * weight;
       }
     }  // Part 1
 
     /* ===== Part 2: BSDF Sampling ==== */
     {
-      // Be sure to backup Intersection before any modification
-      Intersection       its_ = its;
       Float              bsdfPdf;
-      BSDFSamplingRecord bRec(its_, rRec.sampler, ERadiance);
+      BSDFSamplingRecord bRec(its, rRec.sampler, ERadiance);
       // TODO: use BSDFSamplingRecord for now, then transform to
-      // GuidingSamplingRecord
-      Spectrum bsdfWeight = gSampler.sample(bRec, bsdfPdf, rRec.nextSample2D());
-      // Spectrum bsdfWeight = bsdf->sample(bRec, bsdfPdf, rRec.nextSample2D());
+      // using GuidingSamplingRecord
+      Spectrum bsdfWeight = bsdf->sample(bRec, bsdfPdf, rRec.nextSample2D());
       if (bsdfWeight.isZero()) return result;
 
       /* Prevent light leaks due to the use of shading normals */
-      const Vector wo        = its_.toWorld(bRec.wo);
-      Float        woDotGeoN = dot(its_.geoFrame.n, wo);
+      const Vector wo        = its.toWorld(bRec.wo);
+      Float        woDotGeoN = dot(its.geoFrame.n, wo);
       if (m_strictNormals && woDotGeoN * Frame::cosTheta(bRec.wo) <= 0)
         return result;
 
@@ -291,14 +290,14 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
       Spectrum value;
 
       /* Trace a ray in this direction */
-      auto ray = RayDifferential(its_.p, wo, INFINITY);
+      auto ray = RayDifferential(its.p, wo, INFINITY);
 
       /* Evaluate Le in this sampling procedure */
-      if (scene->rayIntersect(ray, its_)) {
+      if (scene->rayIntersect(ray, its)) {
         /* Intersected something - check if it was a luminaire */
-        if (its_.isEmitter()) {
-          value = its_.Le(-ray.d);
-          dRec.setQuery(ray, its_);
+        if (its.isEmitter()) {
+          value = its.Le(-ray.d);
+          dRec.setQuery(ray, its);
           hitEmitter = true;
         }
       } else {
@@ -320,14 +319,17 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
         const Float lumPdf = (!(bRec.sampledType & BSDF::EDelta))
                                  ? scene->pdfEmitterDirect(dRec)
                                  : 0;
+        /* Compute the prob. of the sampling on this direction */
+        const Float sPdf = gSampler.pdf(bRec);
+
         /* Here bsdf/pdf is already merged into throughput. cos \theta' is
-           merged into value. If this branch is not executed, its_ ok because it
+           merged into value. If this branch is not executed, its ok because it
            can be viewed as the estimator evaluates to zero */
         result += bsdfWeight * value * miWeight(bsdfPdf, lumPdf);
       }
     }  // Part 2
 
-    /* ===== Part 2: BSDF Sampling ==== */
+    /* ===== Part 3: LocalSampler Sampling ==== */
     {}
 
     return result;
