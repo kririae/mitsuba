@@ -46,6 +46,12 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
         static_cast<const Sampler*>(sched->getResource(samplerResID, 0));
     size_t sampleCount = sampler->getSampleCount();
 
+    // Create the guiding sampler from cfg (which requires scene)
+    SpatialGuidingConfig cfg{*scene};
+    m_sgsampler = new SpatialGuidingSampler<BSDFGuidingSampler>(cfg);
+
+    Log(EInfo, "SpatialGuidingSampler is created with\n%s",
+        cfg.toString().c_str());
     Log(EInfo,
         "Starting render job (%ix%i, " SIZE_T_FMT " %s, " SIZE_T_FMT
         " %s, " SSE_STR ") ..",
@@ -122,7 +128,8 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
       /*                     Direct illumination sampling                     */
       /* ==================================================================== */
 
-      Li += throughput * directIllumination(rRec);
+      const auto& dLighting = directIllumination(rRec);
+      Li += throughput * dLighting;
 
       /* ==================================================================== */
       /*                            BSDF sampling                             */
@@ -196,13 +203,16 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
   }
 
  private:
+  mutable ref<SpatialGuidingSampler<BSDFGuidingSampler>> m_sgsampler;
+
   void addDirectIlluminationSample() {}
 
   /**
    * @brief directIllumination is expected to perform the
    * integration on light surface. i.e. L_e(p_{i + 1}, -\omega) f(p_i, \omega_i,
    * \omega_o) cos_theta_o / p_\omega(\omega_o). Note that in mitsuba, \omega_o
-   * points to light source.
+   * points to light source. This function will also add samples to spatial
+   * guiding sampler.
    *
    * @param rRec
    * @param bsdf
@@ -221,12 +231,13 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
     // GuidingSamplingRecord
     // gSamplerData is to be acquired from KD-Tree
 #if 1
-    auto gSamplerData =
-        BSDFGuidingSamplerData::MakeBSDFGuidingSamplerData(its, rRec.sampler);
-    auto gSampler = BSDFGuidingSampler(gSamplerData);
+    std::optional<LocalGuidingSamplerBase*> optGSampler;
+    optGSampler = m_sgsampler->acquireSampler(its, rRec.sampler);
+    LocalGuidingSamplerBase* gSampler =
+        optGSampler.has_value() ? optGSampler.value()
+                                : new BSDFGuidingSampler(its, rRec.sampler);
 #else
-    auto gSamplerData =
-        SHGuidingSamplerData::MakeSHGuidingSamplerData(its, rRec.sampler);
+    auto gSamplerData = SHGuidingSamplerData(its, rRec.sampler);
     // project BSDF onto the SH in local coordinate
     gSamplerData.shvec.project(
         [&](const Vector3& wo) -> float {
@@ -263,7 +274,7 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
                             ? bsdf->pdf(bRec)
                             : 0;
         Float sPdf    = (emitter->isOnSurface() && dRec.measure == ESolidAngle)
-                            ? gSampler.pdf(bRec)
+                            ? gSampler->pdf(bRec)
                             : 0;
 
         /* Weight using the power heuristic */
@@ -322,7 +333,7 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
                                  ? scene->pdfEmitterDirect(dRec)
                                  : 0;
         /* Compute the prob. of the sampling on this direction */
-        const Float sPdf = gSampler.pdf(bRec);
+        const Float sPdf = gSampler->pdf(bRec);
 
         /* Here bsdf/pdf is already merged into throughput. cos \theta' is
            merged into value. If this branch is not executed, its ok because it

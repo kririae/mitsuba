@@ -73,17 +73,6 @@ private:
     ListItem *m_head;
 };
 
-/**
- * \brief Generic single-reference static octree
- *
- * This class is currently used to implement BSSRDF evaluation
- * with irradiance point clouds.
- *
- * The \c Item template parameter must implement a function
- * named <tt>getPosition()</tt> that returns a \ref Point.
- *
- * \ingroup libcore
- */
 template <typename Item, typename NodeData> class StaticOctree {
 public:
     struct OctreeNode {
@@ -380,6 +369,198 @@ private:
         const Point center = nodeAABB.getCenter();
 
         const typename LockFreeList<Item>::ListItem *item = node->data.head();
+        while (item) {
+            functor(item->value);
+            item = item->next;
+        }
+
+        // Potential for much optimization..
+        for (int child=0; child<8; ++child) {
+            if (node->children[child]) {
+                const AABB childAABB(childBounds(child, nodeAABB, center));
+                if (childAABB.overlaps(sphere))
+                    searchSphere(node->children[child], childAABB, sphere, functor);
+            }
+        }
+    }
+private:
+    OctreeNode m_root;
+    AABB m_aabb;
+    uint32_t m_maxDepth;
+};
+
+template <typename T> class UnsafeLockFreeList {
+public:
+    struct ListItem {
+        T value;
+        ListItem *next;
+
+        inline ListItem(const T &value) :
+            value(value), next(NULL) { }
+    };
+
+    inline UnsafeLockFreeList() : m_head(NULL) {}
+
+    ~UnsafeLockFreeList() {
+        ListItem *cur = m_head;
+        while (cur) {
+            ListItem *next = cur->next;
+            delete cur;
+            cur = next;
+        }
+    }
+
+    inline ListItem *head() {
+        return m_head;
+    }
+
+    void append(const T &value) {
+        ListItem *item = new ListItem(value);
+        ListItem **cur = &m_head;
+
+        while (!atomicCompareAndExchangePtr<ListItem>(cur, item, NULL))
+            cur = &((*cur)->next);
+    }
+private:
+    ListItem *m_head;
+};
+
+/**
+ * \brief This octree is derived from the previous octree, which unlocks modification 
+ * This class is currently used to implement path guiding.
+ *
+ * \ingroup libcore
+ */
+template <typename Item> class UnsafeDynamicOctree {
+public:
+    /**
+     * \brief Create a new octree
+     *
+     * By default, the maximum tree depth is set to 24
+     */
+    inline UnsafeDynamicOctree(const AABB &aabb, uint32_t maxDepth = 24)
+     : m_aabb(aabb), m_maxDepth(maxDepth) {
+    }
+
+    /// Insert an item with the specified cell coverage
+    inline void insert(const Item &value, const AABB &coverage) {
+        insert(&m_root, m_aabb, value, coverage,
+            coverage.getExtents().lengthSquared(), 0);
+    }
+
+    /// Execute <tt>functor.operator()</tt> on all records, which potentially overlap \c p
+    template <typename Functor> inline void lookup(const Point &p, Functor &functor) const {
+        if (!m_aabb.contains(p))
+            return;
+        lookup(&m_root, m_aabb, p, functor);
+    }
+
+    /// Execute <tt>functor.operator()</tt> on all records, which potentially overlap \c bsphere
+    template <typename Functor> inline void searchSphere(const BSphere &sphere, Functor &functor) {
+        if (!m_aabb.overlaps(sphere))
+            return;
+        searchSphere(&m_root, m_aabb, sphere, functor);
+    }
+
+    inline const AABB &getAABB() const { return m_aabb; }
+private:
+    struct OctreeNode {
+    public:
+        OctreeNode() {
+            for (int i=0; i<8; ++i)
+                children[i] = NULL;
+        }
+
+        ~OctreeNode() {
+            for (int i=0; i<8; ++i) {
+                if (children[i])
+                    delete children[i];
+            }
+        }
+
+        OctreeNode *children[8];
+        UnsafeLockFreeList<Item> data;
+    };
+
+    /// Return the AABB for a child of the specified index
+    inline AABB childBounds(int child, const AABB &nodeAABB, const Point &center) const {
+        AABB childAABB;
+        childAABB.min.x = (child & 4) ? center.x : nodeAABB.min.x;
+        childAABB.max.x = (child & 4) ? nodeAABB.max.x : center.x;
+        childAABB.min.y = (child & 2) ? center.y : nodeAABB.min.y;
+        childAABB.max.y = (child & 2) ? nodeAABB.max.y : center.y;
+        childAABB.min.z = (child & 1) ? center.z : nodeAABB.min.z;
+        childAABB.max.z = (child & 1) ? nodeAABB.max.z : center.z;
+        return childAABB;
+    }
+
+    void insert(OctreeNode *node, const AABB &nodeAABB, const Item &value,
+            const AABB &coverage, Float diag2, uint32_t depth) {
+        /* Add the data item to the current octree node if the max. tree
+           depth is reached or the data item's coverage area is smaller
+           than the current node size */
+        if (depth == m_maxDepth ||
+            (nodeAABB.getExtents().lengthSquared() < diag2)) {
+            node->data.append(value);
+            return;
+        }
+
+        /* Otherwise: test for overlap */
+        const Point center = nodeAABB.getCenter();
+
+        /* Otherwise: test for overlap */
+        bool x[2] = { coverage.min.x <= center.x, coverage.max.x > center.x };
+        bool y[2] = { coverage.min.y <= center.y, coverage.max.y > center.y };
+        bool z[2] = { coverage.min.z <= center.z, coverage.max.z > center.z };
+        bool over[8] = { x[0] && y[0] && z[0], x[0] && y[0] && z[1],
+                         x[0] && y[1] && z[0], x[0] && y[1] && z[1],
+                         x[1] && y[0] && z[0], x[1] && y[0] && z[1],
+                         x[1] && y[1] && z[0], x[1] && y[1] && z[1] };
+
+        /* Recurse */
+        for (int child=0; child<8; ++child) {
+            if (!over[child])
+                continue;
+            if (!node->children[child]) {
+                OctreeNode *newNode = new OctreeNode();
+                if (!atomicCompareAndExchangePtr<OctreeNode>(&node->children[child], newNode, NULL))
+                    delete newNode;
+            }
+            const AABB childAABB(childBounds(child, nodeAABB, center));
+            insert(node->children[child], childAABB,
+                value, coverage, diag2, depth+1);
+        }
+    }
+
+    /// Internal lookup procedure - const version
+    template <typename Functor> inline void lookup(const OctreeNode *node,
+            const AABB &nodeAABB, const Point &p, Functor &functor) const {
+        const Point center = nodeAABB.getCenter();
+
+        typename UnsafeLockFreeList<Item>::ListItem *item = node->data.head();
+        while (item) {
+            functor(item->value);
+            item = item->next;
+        }
+
+        int child = (p.x > center.x ? 4 : 0)
+                + (p.y > center.y ? 2 : 0)
+                + (p.z > center.z ? 1 : 0);
+
+        OctreeNode *childNode = node->children[child];
+
+        if (childNode) {
+            const AABB childAABB(childBounds(child, nodeAABB, center));
+            lookup(node->children[child], childAABB, p, functor);
+        }
+    }
+
+    template <typename Functor> inline void searchSphere(OctreeNode *node,
+            const AABB &nodeAABB, const BSphere &sphere,
+            Functor &functor) {
+        const Point center = nodeAABB.getCenter();
+
+        typename UnsafeLockFreeList<Item>::ListItem *item = node->data.head();
         while (item) {
             functor(item->value);
             item = item->next;
