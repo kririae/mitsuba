@@ -76,6 +76,9 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
     m_process = NULL;
     sched->unregisterResource(integratorResID);
 
+    Log(EInfo, "* Number of stored samples: %lu",
+        m_sgsampler->getNumDistributions());
+
     return proc->getReturnStatus() == ParallelProcess::ESuccess;
   }
 
@@ -283,18 +286,19 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
         result += value * bsdfVal * weight;
 
         /* Add this sample to our sampler */
-        m_sgsampler->addSample(
-            GuidingSample{value * dRec.pdf * bsdfVal, its, bRec.wo});
+        const Float sampleValue = (value * dRec.pdf).average();
+        m_sgsampler->addSample(GuidingSample{sampleValue, its, bRec.wo});
       }
     }  // Part 1
 
-    /* ===== Part 2: BSDF Sampling ==== */
+    /* ===== Part 2: Our own sampling ==== */
     {
       Float              bsdfPdf;
       BSDFSamplingRecord bRec(its, rRec.sampler, ERadiance);
       // TODO: use BSDFSamplingRecord for now, then transform to
       // using GuidingSamplingRecord
-      Spectrum bsdfWeight = bsdf->sample(bRec, bsdfPdf, rRec.nextSample2D());
+      Spectrum bsdfWeight =
+          gSampler->sample(bRec, bsdfPdf, rRec.nextSample2D());
       if (bsdfWeight.isZero()) return result;
 
       /* Prevent light leaks due to the use of shading normals */
@@ -343,6 +347,10 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
            merged into value. If this branch is not executed, its ok because it
            can be viewed as the estimator evaluates to zero */
         result += bsdfWeight * value * miWeight(bsdfPdf, lumPdf);
+
+        /* Add this sample to our sampler */
+        const Float sampleValue = (value * sPdf).average();
+        m_sgsampler->addSample(GuidingSample{sampleValue, its, bRec.wo});
       }
     }  // Part 2
 

@@ -74,7 +74,7 @@ struct SpatialGuidingConfig {
 
 /// The sample data structure used by both KD-Tree and GmmDistribution
 struct GuidingSample {
-  GuidingSample(const Spectrum& weight, const Intersection& its,
+  GuidingSample(const Float& weight, const Intersection& its,
                 const Vector& localWo)
       : weight(weight) {
     const Point2& tp = toSphericalCoordinates(localWo);
@@ -87,10 +87,10 @@ struct GuidingSample {
 
   virtual ~GuidingSample() {}
 
-  Spectrum weight;      //!< Raw contribution for the PDF
-  Float    theta, phi;  //!< Spherical direction in *Local Coordinate*
-  Point    position;    //!< Global Position
-  Normal   normal;      //!< Global Normal
+  Float  weight;      //!< Raw contribution for the PDF
+  Float  theta, phi;  //!< Spherical direction in *Local Coordinate*
+  Point  position;    //!< Global Position
+  Normal normal;      //!< Global Normal
 };
 
 /* ==================================================================== */
@@ -152,7 +152,7 @@ struct SHGuidingSampler : public LocalGuidingSamplerBase {
   static constexpr int bands = 8;
 
   SHGuidingSampler(const Intersection& its, Sampler* sampler)
-      : LocalGuidingSamplerBase(its, sampler) {
+      : LocalGuidingSamplerBase(its, sampler), shvec(bands) {
     shvec.addOffset(-shvec.findMinimum(16) + 0.1);
     shvec.normalize();
   }
@@ -164,13 +164,13 @@ struct SHGuidingSampler : public LocalGuidingSamplerBase {
   virtual void addSample(const GuidingSample& sample) {
     std::scoped_lock<std::mutex> lock(sample_mutex);
 
-    shvec.addDelta(sample.weight.getLuminance(), sample.theta, sample.phi);
+    shvec.addDelta(sample.weight, sample.theta, sample.phi);
     shvec.normalize();
   }
 
   virtual void addSample(const std::vector<GuidingSample>& samples) {
     for (auto& sample : samples)
-      shvec.addDelta(sample.weight.getLuminance(), sample.theta, sample.phi);
+      shvec.addDelta(sample.weight, sample.theta, sample.phi);
   }
 
   /// Calculate the PDF given a DirectionSamplingRecord from e.g., direct
@@ -238,6 +238,8 @@ struct GMM : public SimpleKDNode<Point3f, GmmData>, LocalGuidingSamplerBase {};
 template <typename _LocalSamplerType>
 class SpatialGuidingSampler : public Object {
  public:
+  friend class GuidedPathIntegrator;
+
   using LocalSamplerType = _LocalSamplerType;
 
   using STree = UnsafeDynamicOctree<GuidingSample>;
@@ -359,6 +361,7 @@ class SpatialGuidingSampler : public Object {
                            sTreeKernel);
       if (hasSample) {
         m_dtree.insert(lsampler, AABB{position});
+        ++m_num_dist;
         // search the tree again to acquire the samplerData
         auto result = acquireSampler(its, sampler);
         assert(result.has_value());
@@ -369,6 +372,8 @@ class SpatialGuidingSampler : public Object {
     }
   }
 
+  std::size_t getNumDistributions() const { return m_num_dist; }
+
  private:
   const SpatialGuidingConfig m_cfg;
 
@@ -377,6 +382,9 @@ class SpatialGuidingSampler : public Object {
 
   bool m_first_round{true};
   int  m_op{EOpVariant::ESampleDist};
+
+  /// some statistics
+  std::atomic<std::size_t> m_num_dist;
 };
 
 MTS_NAMESPACE_END
