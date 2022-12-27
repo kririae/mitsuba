@@ -159,7 +159,7 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
       throughput *= bsdfWeight;
       eta *= bRec.eta;
 
-#if 1
+#if 0
       /* ==================================================================== */
       /*                         Indirect illumination                        */
       /* ==================================================================== */
@@ -233,6 +233,7 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
 #if 1
     std::optional<LocalGuidingSamplerBase*> optGSampler;
     optGSampler = m_sgsampler->acquireSampler(its, rRec.sampler);
+    if (optGSampler.has_value()) assert(optGSampler.value() != nullptr);
     LocalGuidingSamplerBase* gSampler =
         optGSampler.has_value() ? optGSampler.value()
                                 : new BSDFGuidingSampler(its, rRec.sampler);
@@ -278,9 +279,12 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
                             : 0;
 
         /* Weight using the power heuristic */
-        // Float weight = miWeight3(dRec.pdf, bsdfPdf, sPdf);
         Float weight = miWeight(dRec.pdf, bsdfPdf);
         result += value * bsdfVal * weight;
+
+        /* Add this sample to our sampler */
+        m_sgsampler->addSample(
+            GuidingSample{value * dRec.pdf * bsdfVal, its, bRec.wo});
       }
     }  // Part 1
 
@@ -345,6 +349,7 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
     /* ===== Part 3: LocalSampler Sampling ==== */
     {}
 
+    if (!optGSampler.has_value()) delete gSampler;
     return result;
   }
 

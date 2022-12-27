@@ -1,1 +1,1 @@
-set args "/home/kr2/Laboratory/SmallVol/assets/scene_vol_basic.xml"
+set args "../guided_scenes/cbox/cbox.xml"

@@ -74,12 +74,23 @@ struct SpatialGuidingConfig {
 
 /// The sample data structure used by both KD-Tree and GmmDistribution
 struct GuidingSample {
-  GuidingSample() {}
-  ~GuidingSample() {}
+  GuidingSample(const Spectrum& weight, const Intersection& its,
+                const Vector& localWo)
+      : weight(weight) {
+    const Point2& tp = toSphericalCoordinates(localWo);
+
+    theta    = tp.x;
+    phi      = tp.y;
+    position = its.p;
+    normal   = its.geoFrame.n;
+  }
+
+  virtual ~GuidingSample() {}
 
   Spectrum weight;      //!< Raw contribution for the PDF
   Float    theta, phi;  //!< Spherical direction in *Local Coordinate*
-  Point3   position;    //!< Global Position
+  Point    position;    //!< Global Position
+  Normal   normal;      //!< Global Normal
 };
 
 /* ==================================================================== */
@@ -233,7 +244,7 @@ class SpatialGuidingSampler : public Object {
   using DTree = UnsafeDynamicOctree<LocalSamplerType>;
 
   /// Phases
-  enum class EOpVariant {
+  enum EOpVariant {
     /// Training phase. Simply adding the samples
     EAddSample = 1,
     /// Eval phase. Build the distribution on-the-fly
@@ -266,11 +277,7 @@ class SpatialGuidingSampler : public Object {
 
   /// Add a sample presented in local coordinate
   void addSample(const GuidingSample& sample) {
-    if (m_op & EOpVariant::AddSample) {
-      // Add a single non-overlapping position
-      m_stree.insert(sample, AABB{sample.position});
-    }
-
+    bool hasDist = false;
     if (m_op & EOpVariant::EAddToDist) {
       // Search DTree to find adjacent distributions
       m_dtree.searchSphere(
@@ -279,8 +286,14 @@ class SpatialGuidingSampler : public Object {
             if (distance(lsampler.getPosition(), sample.position) >
                 m_cfg.m_search_radius)
               return;
+            hasDist = true;
             lsampler.addSample(sample);
           });
+    }
+
+    if ((m_op & EOpVariant::EAddSample) && !hasDist) {
+      // Add a single non-overlapping position
+      m_stree.insert(sample, AABB{sample.position});
     }
   }
 
@@ -304,18 +317,20 @@ class SpatialGuidingSampler : public Object {
     auto          valueFunction = [&](const LocalSamplerType& lsampler) {
       return pow(distance(position, lsampler.getPosition()), 2) /
                  m_cfg.m_search_radius +
-             2 * sqrt(1 - dot(normal, lsampler.getNormal()));
+             2 * sqrt(1 -
+                               std::min(1 - Epsilon, dot(normal, lsampler.getNormal())));
     };
 
     bool  hasSampler = false;
-    Float value      = INFINITY;
+    Float value      = 1e9;
 
     LocalSamplerType* resultSampler{nullptr};
     auto              dTreeKernel = [&](LocalSamplerType& lsampler) {
       if (distance(lsampler.getPosition(), position) > m_cfg.m_search_radius)
         return;
-      hasSampler   = true;
       Float value_ = valueFunction(lsampler);
+      assert(!std::isnan(value_));
+      hasSampler = true;
       if (value_ < value) {
         value         = value_;
         resultSampler = &lsampler;
@@ -326,6 +341,7 @@ class SpatialGuidingSampler : public Object {
 
     if (hasSampler) {
       // if there is neighbor sampler, return it
+      assert(resultSampler != nullptr);
       return resultSampler;
     } else {
       // else, build a new local sampler here
@@ -348,7 +364,7 @@ class SpatialGuidingSampler : public Object {
         assert(result.has_value());
         return result;
       } else {
-        return {};  // optional is empty
+        return std::nullopt;  // optional is empty
       }
     }
   }
@@ -359,8 +375,8 @@ class SpatialGuidingSampler : public Object {
   STree m_stree;
   DTree m_dtree;
 
-  bool       m_first_round{true};
-  EOpVariant m_op{EOpVariant::EAddSample};
+  bool m_first_round{true};
+  int  m_op{EOpVariant::ESampleDist};
 };
 
 MTS_NAMESPACE_END

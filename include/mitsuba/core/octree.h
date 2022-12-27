@@ -449,14 +449,14 @@ public:
     }
 
     /// Execute <tt>functor.operator()</tt> on all records, which potentially overlap \c p
-    template <typename Functor> inline void lookup(const Point &p, Functor &functor) const {
+    template <typename Functor> inline void lookup(const Point &p, const Functor &functor) const {
         if (!m_aabb.contains(p))
             return;
         lookup(&m_root, m_aabb, p, functor);
     }
 
     /// Execute <tt>functor.operator()</tt> on all records, which potentially overlap \c bsphere
-    template <typename Functor> inline void searchSphere(const BSphere &sphere, Functor &functor) {
+    template <typename Functor> inline void searchSphere(const BSphere &sphere, const Functor &functor) {
         if (!m_aabb.overlaps(sphere))
             return;
         searchSphere(&m_root, m_aabb, sphere, functor);
@@ -534,7 +534,7 @@ private:
 
     /// Internal lookup procedure - const version
     template <typename Functor> inline void lookup(const OctreeNode *node,
-            const AABB &nodeAABB, const Point &p, Functor &functor) const {
+            const AABB &nodeAABB, const Point &p, const Functor &functor) const {
         const Point center = nodeAABB.getCenter();
 
         typename UnsafeLockFreeList<Item>::ListItem *item = node->data.head();
@@ -557,7 +557,7 @@ private:
 
     template <typename Functor> inline void searchSphere(OctreeNode *node,
             const AABB &nodeAABB, const BSphere &sphere,
-            Functor &functor) {
+            const Functor &functor) {
         const Point center = nodeAABB.getCenter();
 
         typename UnsafeLockFreeList<Item>::ListItem *item = node->data.head();
