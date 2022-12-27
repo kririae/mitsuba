@@ -306,11 +306,7 @@ class EnvironmentMap : public Emitter {
         for (int x = 0; x < m_size.x; ++x) {
           Spectrum value(array(x, y));
 
-#if 1
           colSum += value.getLuminance();
-#else
-          colSum += 1.0;
-#endif
           m_cdfCols[colPos++] = (float)colSum;
         }
 
