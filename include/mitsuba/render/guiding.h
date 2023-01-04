@@ -56,7 +56,7 @@ struct SpatialGuidingConfig {
 
   /// Numeric configurations
   std::size_t m_num_photons{0};
-  Float       m_search_radius{50.0};
+  Float       m_search_radius{10.0};
 
   Scene& scene;
 
@@ -215,12 +215,48 @@ struct SHGuidingSampler : public LocalGuidingSamplerBase {
   std::mutex sample_mutex;
 };
 
-#if 0
-/// Internal data used by \ref GMM
-struct GmmData {};
+struct GMMGuidingSampler : public LocalGuidingSamplerBase {
+  GMMGuidingSampler(const Intersection& its, Sampler* sampler)
+      : LocalGuidingSamplerBase(its, sampler) {}
+  virtual ~GMMGuidingSampler() {}
 
-struct GMM : public SimpleKDNode<Point3f, GmmData>, LocalGuidingSamplerBase {};
-#endif
+  virtual void addSample(const GuidingSample& sample) {
+    std::scoped_lock<std::mutex> lock(sample_mutex);
+    /* No area-preserving transformation for now */
+    gmm.addBatchedSample(Vector2{sample.theta, sample.phi}, sample.weight);
+  }
+
+  virtual void addSample(const std::vector<GuidingSample>& samples) {
+    std::scoped_lock<std::mutex> lock(sample_mutex);
+    for (auto& sample : samples)
+      gmm.addBatchedSample(Vector2{sample.theta, sample.phi}, sample.weight);
+  }
+
+  virtual Float pdf(const BSDFSamplingRecord& dRec) {
+    std::scoped_lock<std::mutex> lock(sample_mutex);
+
+    auto uv = toSphericalCoordinates(dRec.wo);
+    return gmm.pdf(Vector2{uv.x, uv.y});
+  }
+
+  virtual Spectrum sample(BSDFSamplingRecord& bRec, Float& outPdf,
+                          const Point2& sample) {
+    std::scoped_lock<std::mutex> lock(sample_mutex);
+
+    const BSDF* bsdf    = its.getBSDF();
+    auto        sample_ = gmm.sample(Vector2{sample.x, sample.y}, outPdf);
+    // The transformed result lies on local coordinate
+    bRec.wo = sphericalDirection(sample_.x, sample_.y);
+
+    Spectrum result = bsdf->eval(bRec) / outPdf;  // already multiplied by cos
+    return result;
+  }
+
+ public:
+  std::mutex sample_mutex;
+
+  GMM::GaussianMixtureModel<2, 5> gmm;
+};
 
 /**
  * @brief The implementation of "On-line Learning of Parametric Mixture Models
