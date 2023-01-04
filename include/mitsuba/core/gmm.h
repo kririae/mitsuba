@@ -3,11 +3,18 @@
 #define __MITSUBA_CORE_GMM_H__
 
 #include <mitsuba/core/matrix.h>
+#include <mitsuba/core/vector.h>
 #include <mitsuba/mitsuba.h>
+
+#include <array>
 
 MTS_NAMESPACE_BEGIN
 
 namespace GMM {
+
+#define GMM_CHECK(v)      \
+  assert(!std::isnan(v)); \
+  assert(!std::isinf(v));
 
 template <int DDimension>
 class GaussianSufficientStatistics;
@@ -33,16 +40,16 @@ class GaussianSufficientStatistics<2> {
   using VectorType                = Vector2;
   using MatrixType                = Matrix2x2;
 
+  GaussianSufficientStatistics() : first(1) {}
   GaussianSufficientStatistics(const VectorType& sample)
       : first(1),
         second(sample),
         third(sampleToMatrix(sample) * sampleToTransposedMatrix(sample)) {}
-
   GaussianSufficientStatistics(Float f, const VectorType& s,
                                const MatrixType& t)
       : first(f), second(s), third(t) {}
 
-  Float      first;
+  Float      first{1};
   VectorType second;
   MatrixType third;
 
@@ -64,9 +71,17 @@ class MultivariateGaussian;
 
 template <>
 class MultivariateGaussian<2> {
+ public:
   static constexpr int DDimension = 2;
   using VectorType                = Vector2;
   using MatrixType                = Matrix2x2;
+
+  MultivariateGaussian() {
+    m_mean = Vector2{0.0, 0.0};
+    m_cov.setIdentity();
+    m_cov.invert(m_icov);
+    denom = sqrt(pow(2 * M_PI, DDimension) * m_cov.det());
+  }
 
   MultivariateGaussian(const VectorType& mean, const MatrixType& cov)
       : m_mean(mean),
@@ -86,12 +101,22 @@ class MultivariateGaussian<2> {
   auto setMean(const VectorType& mean) { m_mean = mean; }
   auto setCov(const MatrixType& cov) {
     m_cov = cov;
-    m_cov.invert2x2(m_cov);
+    m_cov.invert2x2(m_icov);
     denom = sqrt(pow(2 * M_PI, DDimension) * m_cov.det());
   }
 
+  auto toString() const -> std::string {
+    std::ostringstream oss;
+    oss << "MultivariateGaussian[" << endl
+        << "  DDimension = " << DDimension << "," << endl
+        << "  m_mean = " << m_mean.toString() << "," << endl
+        << "  m_conv = " << m_cov.toString() << endl
+        << "]";
+    return oss.str();
+  }
+
  private:
-  VectorType m_mean;
+  VectorType m_mean{};
   MatrixType m_cov, m_icov;
   Float      denom;
 };
@@ -108,12 +133,16 @@ struct EtaInstance {
 };
 
 template <int DDimension, int KComponents>
-class GaussianMixtureModel {
+class GaussianMixtureModel : public Object {
  public:
   using ModelType  = MultivariateGaussian<DDimension>;
   using StatType   = GaussianSufficientStatistics<DDimension>;
   using VectorType = typename ModelType::VectorType;
   using MatrixType = typename ModelType::MatrixType;
+
+  GaussianMixtureModel() {
+    for (int i = 0; i < KComponents; ++i) m_param_mix[i] = 1.0 / KComponents;
+  }
 
   static auto abT(const VectorType& a, const VectorType& b) -> MatrixType {
     return StatType::sampleToMatrix(a) * StatType::sampleToTransposedMatrix(b);
@@ -123,6 +152,10 @@ class GaussianMixtureModel {
   auto responsibility(const VectorType& sample, const int k /* component ID */)
       -> Float {
     assert(k < KComponents);
+    GMM_CHECK(sample[0]);
+    GMM_CHECK(sample[1]);
+    GMM_CHECK(m_param_mix[k]);
+    GMM_CHECK(m_param_gauss[k].eval(sample));
     return m_param_mix[k] * m_param_gauss[k].eval(sample);
   }
 
@@ -130,20 +163,39 @@ class GaussianMixtureModel {
   /// streaming E-step
   auto updateSufficientStats(const VectorType& sample, const Float& weight)
       -> void {
-    const Float etaI  = m_eta.getEta();
-    Float       denom = 0.0;
+    const Float etaI = m_eta.getEta();
+    GMM_CHECK(etaI);
+    Float denom = 0.0;
 
     /* Normalized responsibility */
-    std::array<Float, KComponents> pdf{0.0};
+    std::array<Float, KComponents> pdf;
+    std::fill(pdf.begin(), pdf.end(), 0);
     for (int j = 0; j < KComponents; ++j) {
       pdf[j] = responsibility(sample, j);
       denom += pdf[j];
     }
 
+    if (denom == 0) {
+      printf("[n=%ld,\n", m_eta.i);
+      printf("sample=%s,\n", sample.toString().c_str());
+      printf("mix=%f,\n", m_param_mix[0]);
+      printf("gauss=%s]\n", m_param_gauss[0].toString().c_str());
+    }
+
+    denom = std::max<Float>(denom, 1e-4);
     for (int j = 0; j < KComponents; ++j) {
       auto& stat = m_stats[j];
-      stat       = stat * (1 - etaI) +
+      assert(stat.first != 0);
+      stat = stat * (1 - etaI) +
              StatType(sample) * (etaI * weight * pdf[j] / denom); /* eq 7 */
+      GMM_CHECK(etaI * weight * pdf[j] / denom);
+      if (stat.first == 0) {
+        printf("[n=%ld,\n", m_eta.i);
+        printf("sample=%s,\n", sample.toString().c_str());
+        printf("mix=%f,\n", m_param_mix[0]);
+        printf("gauss=%s]\n", m_param_gauss[0].toString().c_str());
+        assert(false);
+      }
     }
 
     m_mixture_weight = (1 - etaI) * m_mixture_weight + etaI * weight;
@@ -158,14 +210,22 @@ class GaussianMixtureModel {
       const auto& second = stat.second;
       const auto& third  = stat.third;
       const auto& n      = m_eta.i;
+      GMM_CHECK(first);
+      if (first == 0) {
+        std::cout << n << " " << j << std::endl;
+        assert(false);
+      }
 
       /* init A, B in the paper */
-      MatrixType       A, B;
-      const MatrixType I = MatrixType{}.setIdentity();
+      MatrixType A, B;
+      MatrixType I;
+      I.setIdentity();
 
       /* The following parameters are written into two parts */
       auto mix = (first / m_mixture_weight) + (cp_v - 1) / n;
       mix /= (1 + KComponents * (cp_v - 1) / n);
+      GMM_CHECK(mix);
+      assert(mix != 0);
 
       auto mean = second / first;
 
@@ -188,16 +248,24 @@ class GaussianMixtureModel {
     if ((n + 1) % m_freq == 0) updateModel();
   }
 
+  /// debug port
+  auto printInfo() -> void {
+    printf("num_components: %d\n", KComponents);
+    for (int j = 0; j < KComponents; ++j) {
+      printf("%s\n", m_param_gauss[j].toString().c_str());
+    }
+  }
+
  private:
   /// These two represents the parameter vector
-  std::array<ModelType, KComponents> m_param_gauss;
-  std::array<Float, KComponents>     m_param_mix;
-  std::array<StatType, KComponents>  m_stats;
+  std::array<ModelType, KComponents> m_param_gauss{};
+  std::array<Float, KComponents>     m_param_mix{0};
+  std::array<StatType, KComponents>  m_stats{};
 
   EtaInstance m_eta{};
-  Float       m_mixture_weight{0.0};
+  Float       m_mixture_weight{1.0};
 
-  int         batch_size = 16, m_freq = 10;
+  int         batch_size = 32, m_freq = 24;
   const Float cp_a{2.01}, cp_b{5 * 1e-4}, cp_v{1.01};
 };
 
