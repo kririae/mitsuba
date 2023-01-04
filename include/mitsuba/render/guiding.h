@@ -2,6 +2,7 @@
 #if !defined(__MITSUBA_RENDER_GUIDING_H__)
 #define __MITSUBA_RENDER_GUIDING_H__
 
+#include <mitsuba/core/gmm.h>
 #include <mitsuba/core/octree.h>
 #include <mitsuba/core/shvector.h>
 #include <mitsuba/core/util.h>
@@ -55,7 +56,7 @@ struct SpatialGuidingConfig {
 
   /// Numeric configurations
   std::size_t m_num_photons{0};
-  Float       m_search_radius{1.0};
+  Float       m_search_radius{50.0};
 
   Scene& scene;
 

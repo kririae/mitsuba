@@ -50,6 +50,9 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
     SpatialGuidingConfig cfg{*scene};
     m_sgsampler = new SpatialGuidingSampler<BSDFGuidingSampler>(cfg);
 
+    // TODO: modify maxDepth
+    m_maxDepth = 16;
+
     Log(EInfo, "SpatialGuidingSampler is created with\n%s",
         cfg.toString().c_str());
     Log(EInfo,
@@ -84,6 +87,9 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
 
   /// Customized functions for guided path tracer
   Spectrum Li(const RayDifferential& r, RadianceQueryRecord& rRec) const {
+    // TODO
+    return recursiveLi(r, rRec);
+
     /* Some aliases and local variables */
     const Scene*    scene = rRec.scene;
     Intersection&   its   = rRec.its;
@@ -130,27 +136,15 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
       // TODO: use BSDFSamplingRecord for now, then transform to
       // GuidingSamplingRecord
       // gSamplerData is to be acquired from KD-Tree
-#if 1
       std::optional<LocalGuidingSamplerBase*> optGSampler;
-      optGSampler = m_sgsampler->acquireSampler(its, rRec.sampler);
-      if (optGSampler.has_value()) assert(optGSampler.value() != nullptr);
-      LocalGuidingSamplerBase* gSampler =
-          optGSampler.has_value() ? optGSampler.value()
-                                  : new BSDFGuidingSampler(its, rRec.sampler);
-#else
-      auto gSamplerData = SHGuidingSamplerData(its, rRec.sampler);
-      // project BSDF onto the SH in local coordinate
-      gSamplerData.shvec.project(
-          [&](const Vector3& wo) -> float {
-            // Here, wo is local coordinate
-            BSDFSamplingRecord bRec(its, wo, ERadiance);
-            Float              pdf = bsdf->pdf(bRec);
-            return std::max<mitsuba::Float>(pdf, 0);  // why < 0
-          },
-          8);
-      gSamplerData.shvec.normalize();
-      auto gSampler = SHGuidingSampler(gSamplerData);
-#endif
+      LocalGuidingSamplerBase*                gSampler{nullptr};
+      if constexpr (true) {
+        optGSampler = m_sgsampler->acquireSampler(its, rRec.sampler);
+        if (optGSampler.has_value()) assert(optGSampler.value() != nullptr);
+        gSampler = optGSampler.has_value()
+                       ? optGSampler.value()
+                       : new BSDFGuidingSampler(its, rRec.sampler);
+      }
 
       /* ==================================================================== */
       /*                     Direct illumination sampling                     */
@@ -188,6 +182,7 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
           }
         }
       }
+
       /* ==================================================================== */
       /*                            BSDF sampling                             */
       /* ==================================================================== */
@@ -250,7 +245,6 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
       eta *= bRec.eta;
       throughput *= bsdfWeight;
 
-#if 0
       /* ==================================================================== */
       /*                         Indirect illumination                        */
       /* ==================================================================== */
@@ -272,12 +266,172 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
         if (rRec.nextSample1D() >= q) break;
         throughput /= q;
       }
-#else
-      break;
-#endif
     }
 
     return Li;
+  }
+
+  Spectrum recursiveLi(const RayDifferential& r,
+                       RadianceQueryRecord&   rRec) const {
+    RayDifferential ray(r);
+    /* Perform the first ray intersection (or ignore if the
+       intersection has already been provided). */
+    rRec.rayIntersect(ray);
+    ray.mint = Epsilon;
+
+    return recursiveLiImpl(r, rRec);
+  }
+
+  /**
+   * @brief The recursive implementation of Li to readily acquire Li at any
+   * position
+   *
+   * @param r
+   * @param rRec
+   * @param depth
+   * @return Spectrum
+   */
+  Spectrum recursiveLiImpl(const RayDifferential& r,
+                           RadianceQueryRecord&   rRec) const {
+    const Scene*    scene = rRec.scene;
+    Intersection&   its   = rRec.its;
+    RayDifferential ray(r);
+
+    Spectrum L_dir(0.0), L_indir(0.0);
+
+    if (!its.isValid()) {
+      if ((rRec.type & RadianceQueryRecord::EEmittedRadiance))
+        return scene->evalEnvironment(ray);
+    }
+
+    if (its.isEmitter() && (rRec.type & RadianceQueryRecord::EEmittedRadiance))
+      return its.Le(-ray.d);
+
+    const BSDF* bsdf = its.getBSDF(ray);
+
+    if ((rRec.depth >= m_maxDepth && m_maxDepth > 0) ||
+        (m_strictNormals &&
+         dot(ray.d, its.geoFrame.n) * Frame::cosTheta(its.wi) >= 0)) {
+      /* Only continue if:
+         1. The current path length is below the specifed maximum
+         2. If 'strictNormals'=true, when the geometric and shading
+            normals classify the incident direction to the same side */
+      return L_dir + L_indir;
+    }
+
+    /* ==================================================================== */
+    /*                       Sampler Initialization                         */
+    /* ==================================================================== */
+
+    std::optional<LocalGuidingSamplerBase*> optGSampler;
+    optGSampler = m_sgsampler->acquireSampler(its, rRec.sampler);
+    if (optGSampler.has_value()) assert(optGSampler.value() != nullptr);
+    LocalGuidingSamplerBase* gSampler =
+        optGSampler.has_value() ? optGSampler.value()
+                                : new BSDFGuidingSampler(its, rRec.sampler);
+
+    /* ==================================================================== */
+    /*                     Direct illumination sampling                     */
+    /* ==================================================================== */
+
+    /* Estimate the direct illumination if this is requested */
+    DirectSamplingRecord dRec(its);
+
+    if (rRec.type & RadianceQueryRecord::EDirectSurfaceRadiance &&
+        (bsdf->getType() & BSDF::ESmooth)) {
+      Spectrum value = scene->sampleEmitterDirect(dRec, rRec.nextSample2D());
+      if (!value.isZero()) {
+        const Emitter* emitter = static_cast<const Emitter*>(dRec.object);
+
+        /* Allocate a record for querying the BSDF */
+        BSDFSamplingRecord bRec(its, its.toLocal(dRec.d), ERadiance);
+
+        /* Evaluate BSDF * cos(theta) */
+        const Spectrum bsdfVal = bsdf->eval(bRec);
+
+        /* Prevent light leaks due to the use of shading normals */
+        if (!bsdfVal.isZero() &&
+            (!m_strictNormals ||
+             dot(its.geoFrame.n, dRec.d) * Frame::cosTheta(bRec.wo) > 0)) {
+          /* Calculate prob. of having generated that direction
+             using BSDF sampling */
+          Float bsdfPdf =
+              (emitter->isOnSurface() && dRec.measure == ESolidAngle)
+                  ? gSampler->pdf(bRec)
+                  : 0;
+
+          /* Weight using the power heuristic */
+          Float weight = miWeight(dRec.pdf, bsdfPdf);
+          L_dir += value * bsdfVal * weight;
+        }
+      }
+    }
+
+    /* ==================================================================== */
+    /*                            BSDF sampling                             */
+    /* ==================================================================== */
+
+    /* Sample BSDF * cos(theta) */
+    Float              bsdfPdf;
+    BSDFSamplingRecord bRec(its, rRec.sampler, ERadiance);
+    Spectrum bsdfWeight = gSampler->sample(bRec, bsdfPdf, rRec.nextSample2D());
+    if (bsdfWeight.isZero()) return L_dir + L_indir;
+
+    /* Prevent light leaks due to the use of shading normals */
+    const Vector wo        = its.toWorld(bRec.wo);
+    Float        woDotGeoN = dot(its.geoFrame.n, wo);
+    if (m_strictNormals && woDotGeoN * Frame::cosTheta(bRec.wo) <= 0)
+      return L_dir + L_indir;
+
+    bool     hitEmitter = false;
+    Spectrum value;
+
+    /* Trace a ray in this direction */
+    ray = Ray(its.p, wo, ray.time);
+    if (scene->rayIntersect(ray, its)) {
+      /* Intersected something - check if it was a luminaire */
+      if (its.isEmitter()) {
+        value = its.Le(-ray.d);
+        dRec.setQuery(ray, its);
+        hitEmitter = true;
+      }
+    } else {
+      /* Intersected nothing -- perhaps there is an environment map? */
+      const Emitter* env = scene->getEnvironmentEmitter();
+
+      if (env) {
+        value = env->evalEnvironment(ray);
+        if (!env->fillDirectSamplingRecord(dRec, ray)) return L_dir + L_indir;
+        hitEmitter = true;
+      } else {
+        return L_dir + L_indir;
+      }
+    }
+
+    /* If a luminaire was hit, estimate the local illumination and
+       weight using the power heuristic */
+    if (hitEmitter &&
+        (rRec.type & RadianceQueryRecord::EDirectSurfaceRadiance)) {
+      /* Compute the prob. of generating that direction using the
+         implemented direct illumination sampling technique */
+      const Float lumPdf = (!(bRec.sampledType & BSDF::EDelta))
+                               ? scene->pdfEmitterDirect(dRec)
+                               : 0;
+      L_dir += bsdfWeight * value * miWeight(bsdfPdf, lumPdf);
+    }
+
+    if (!hitEmitter) {
+      /* no RR for now */
+      rRec.depth++;
+      rRec.type = RadianceQueryRecord::ERadianceNoEmission;
+      L_indir   = recursiveLiImpl(ray, rRec) *
+                bsdfWeight; /* bsdfWeight contains bsdf*cos/pdf */
+    }
+
+    /* Here L_dir and L_indir are the real direct lighting and indirect lighting
+       to be evaluated */
+
+    return L_dir + L_indir;
   }
 
   inline Float miWeight(Float pdfA, Float pdfB) const {
