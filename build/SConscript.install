@@ -51,7 +51,7 @@ if 'linux' in sys.platform:
                         'librender/libmitsuba-render.so', 'libbidir/libmitsuba-bidir.so'])
         for ver in hasPython:
                 installAs(os.path.join(distDir, 'python/'+ver+'/mitsuba.so'), 'libpython/mitsuba_python' + ver + '.so')
-        install(distDir, ['mitsuba/mitsuba', 'mitsuba/mtssrv', 'mitsuba/mtsutil'])
+        install(distDir, ['mitsuba/mitsuba', 'mitsuba/mtssrv', 'mitsuba/mtsutil', 'mitsuba/mtstest'])
         if hasQt:
                 install(distDir, ['mtsgui/mtsgui'])
         if hasCollada:

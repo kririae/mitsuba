@@ -25,6 +25,7 @@ if sys.platform == 'darwin':
         mainEnv.Append(LINKFLAGS=['-Xlinker', '-rpath', '-Xlinker', '@executable_path/../Frameworks'])
 
 mainEnv.Program('mtsutil', stubs + winstubs + ['mtsutil.cpp'])
+mainEnv.Program('mtstest', stubs + winstubs + ['mtstest.cpp'])
 
 # Build the command-line+GUI interface
 mainEnv.Program('mtssrv',  winstubs + ['mtssrv.cpp'])
