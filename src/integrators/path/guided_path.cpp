@@ -2,6 +2,8 @@
 #include <mitsuba/render/renderproc.h>
 #include <mitsuba/render/scene.h>
 
+#include "mitsuba/render/shape.h"
+
 MTS_NAMESPACE_BEGIN
 
 class GuidedPathIntegrator : public MonteCarloIntegrator {
@@ -294,11 +296,15 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
    */
   Spectrum recursiveLiImpl(const RayDifferential& r,
                            RadianceQueryRecord&   rRec) const {
-    const Scene*    scene = rRec.scene;
-    Intersection&   its   = rRec.its;
-    RayDifferential ray(r);
+    const Scene*       scene  = rRec.scene;
+    Intersection&      its    = rRec.its;
+    const Intersection its_bk = its;
+    RayDifferential    ray(r);
+    Vector             localWo;
 
     Spectrum L_dir(0.0), L_indir(0.0);
+
+    if (rRec.depth >= 2) return L_dir;
 
     if (!its.isValid()) {
       if ((rRec.type & RadianceQueryRecord::EEmittedRadiance))
@@ -382,7 +388,8 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
       if (bsdfWeight.isZero()) break;
 
       /* Prevent light leaks due to the use of shading normals */
-      const Vector wo        = its.toWorld(bRec.wo);
+      localWo                = bRec.wo;
+      const Vector wo        = its.toWorld(localWo);
       Float        woDotGeoN = dot(its.geoFrame.n, wo);
       if (m_strictNormals && woDotGeoN * Frame::cosTheta(bRec.wo) <= 0) break;
 
@@ -430,11 +437,15 @@ class GuidedPathIntegrator : public MonteCarloIntegrator {
         L_indir   = recursiveLiImpl(ray, rRec) *
                   bsdfWeight; /* bsdfWeight contains bsdf*cos/pdf */
       }
+
+      /* Here L_dir and L_indir are the real direct lighting and indirect
+         lighting to be evaluated */
+      const auto sample = GuidingSample((L_dir + L_indir).average(), its_bk,
+                                        normalize(localWo));
+      m_sgsampler->addSample(sample);
     } while (false);  // break to here;
 
     if (!optGSampler.has_value() && gSampler) delete gSampler;
-    /* Here L_dir and L_indir are the real direct lighting and indirect lighting
-       to be evaluated */
     return L_dir + L_indir;
   }
 

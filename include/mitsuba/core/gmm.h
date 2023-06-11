@@ -1,4 +1,7 @@
 #pragma once
+#include <cstdio>
+
+#include "mitsuba/core/constants.h"
 #if !defined(__MITSUBA_CORE_GMM_H__)
 #define __MITSUBA_CORE_GMM_H__
 
@@ -41,7 +44,7 @@ class GaussianSufficientStatistics<2> {
   using VectorType                = Vector2;
   using MatrixType                = Matrix2x2;
 
-  GaussianSufficientStatistics() : first(1) {}
+  GaussianSufficientStatistics() : first(1), second(), third() {}
   GaussianSufficientStatistics(const VectorType& sample)
       : first(1),
         second(sample),
@@ -51,8 +54,8 @@ class GaussianSufficientStatistics<2> {
       : first(f), second(s), third(t) {}
 
   Float      first{1};
-  VectorType second;
-  MatrixType third;
+  VectorType second{};
+  MatrixType third{};
 
   inline GaussianSufficientStatistics operator+(
       const GaussianSufficientStatistics& other) const {
@@ -78,8 +81,9 @@ class MultivariateGaussian<2> {
   using MatrixType                = Matrix2x2;
 
   MultivariateGaussian() {
-    m_mean = Vector2{0.0, 0.0};
+    m_mean = Vector2{M_PI / 4, M_PI};
     m_cov.setIdentity();
+    m_cov *= 1e-3;
     bool cholres = m_cov.chol(m_chol);
     assert(cholres);
     m_cov.invert(m_icov);
@@ -112,12 +116,24 @@ class MultivariateGaussian<2> {
 
   auto getMean() const -> const VectorType& { return m_mean; }
   auto getCov() const -> const MatrixType& { return m_cov; }
-  auto setMean(const VectorType& mean) { m_mean = mean; }
+  auto setMean(const VectorType& mean) {
+    GMM_CHECK(mean[0]);
+    GMM_CHECK(mean[1]);
+    m_mean = mean;
+  }
+
   auto setCov(const MatrixType& cov) {
     m_cov        = cov;
     bool cholres = m_cov.chol(m_chol);
+
+    if (m_cov.det() <= 0) {
+      m_cov.setIdentity();
+      m_cov *= 0.01;
+    }
+
     m_cov.invert2x2(m_icov);
-    denom = sqrt(pow(2 * M_PI, DDimension) * m_cov.det());
+    denom   = sqrt(pow(2 * M_PI, DDimension) * m_cov.det());
+    cholres = m_cov.chol(m_chol);
     assert(cholres);
   }
 
@@ -138,7 +154,7 @@ class MultivariateGaussian<2> {
 };
 
 struct EtaInstance {
-  uint64_t i{1};
+  uint64_t i{2};
   Float    alpha{0.6};
 
   Float getEta() {
@@ -179,12 +195,16 @@ class GaussianMixtureModel : public Object {
   auto sample(const Vector2f& u, Float& outPdf) -> VectorType {
     /* Perform sampling on m_param_mix */
     auto lower =
-        std::lower_bound(m_param_mix_incl.begin(), m_param_mix_incl.end(), u.x);
+        std::lower_bound(m_param_mix_incl.begin(), m_param_mix_incl.end(),
+                         std::min<Float>(u.x, 1.0 - Epsilon));
     const int index = lower - m_param_mix_incl.begin();
     assert(0 <= index && index < KComponents);
     /* Perform sampling on gaussian distribution */
     VectorType result = m_param_gauss[index].sample();
     outPdf            = pdf(result); /* marginal distribution */
+
+    GMM_CHECK(result.x);
+    GMM_CHECK(result.y);
     return result;
   }
 
@@ -207,6 +227,8 @@ class GaussianMixtureModel : public Object {
   /// streaming E-step
   auto updateSufficientStats(const VectorType& sample, const Float& weight)
       -> void {
+    GMM_CHECK(sample[0]);
+    GMM_CHECK(sample[1]);
     const Float etaI = m_eta.getEta();
     GMM_CHECK(etaI);
     Float denom = 0.0;
@@ -219,22 +241,30 @@ class GaussianMixtureModel : public Object {
       denom += pdf[j];
     }
 
-    if (denom == 0) {
-      printf("[n=%ld,\n", m_eta.i);
-      printf("sample=%s,\n", sample.toString().c_str());
-      printf("mix=%f,\n", m_param_mix[0]);
-      printf("gauss=%s]\n", m_param_gauss[0].toString().c_str());
+    if (denom < 1e-6) {
+      // re-initialize the PDFs
+      std::fill(pdf.begin(), pdf.end(), 1.0);
+      denom = KComponents;
     }
 
-    denom = std::max<Float>(denom, 1e-5);
+    Float sum = 0.0;
     for (int j = 0; j < KComponents; ++j) {
-      auto& stat = m_stats[j];
+      auto& stat    = m_stats[j];
+      auto  preStat = stat;
       assert(stat.first != 0);
       stat = stat * (1 - etaI) +
              StatType(sample) * (etaI * weight * pdf[j] / denom); /* eq 7 */
+      sum += stat.first;
+      GMM_CHECK(etaI);
+      GMM_CHECK(pdf[j]);
+      GMM_CHECK(weight);
+      GMM_CHECK(1.0 / denom);
       GMM_CHECK(etaI * weight * pdf[j] / denom);
       if (stat.first == 0) {
-        printf("[n=%ld,\n", m_eta.i);
+        printf(
+            "issue: stat.first==0, KComponents=%d, j=%d, preFirst=%f, etaI=%f, "
+            "[n=%ld,\n",
+            KComponents, j, preStat.first, etaI, m_eta.i);
         printf("sample=%s,\n", sample.toString().c_str());
         printf("mix=%f,\n", m_param_mix[0]);
         printf("gauss=%s]\n", m_param_gauss[0].toString().c_str());
@@ -314,7 +344,7 @@ class GaussianMixtureModel : public Object {
   std::array<StatType, KComponents>  m_stats{};
 
   EtaInstance m_eta{};
-  Float       m_mixture_weight{1.0};
+  Float       m_mixture_weight{KComponents};
 
   int         batch_size = 32, m_freq = 4;
   const Float cp_a{2.01}, cp_b{5 * 1e-4}, cp_v{1.01};

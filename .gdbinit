@@ -1,1 +1,1 @@
-set args "../guided_scenes/cbox/cbox_guided.xml"
+set args "../guided_scenes/cbox/guided_cbox.xml"

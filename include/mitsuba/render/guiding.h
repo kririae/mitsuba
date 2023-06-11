@@ -1,16 +1,21 @@
 #pragma once
+#include "mitsuba/core/constants.h"
 #if !defined(__MITSUBA_RENDER_GUIDING_H__)
 #define __MITSUBA_RENDER_GUIDING_H__
 
 #include <mitsuba/core/gmm.h>
+#include <mitsuba/core/lock.h>
+#include <mitsuba/core/math.h>
 #include <mitsuba/core/octree.h>
 #include <mitsuba/core/shvector.h>
+#include <mitsuba/core/spectrum.h>
 #include <mitsuba/core/util.h>
 #include <mitsuba/render/bsdf.h>
 #include <mitsuba/render/sampler.h>
 #include <mitsuba/render/scene.h>
 #include <mitsuba/render/shape.h>
 
+#include <memory_resource>
 #include <mutex>
 #include <optional>
 
@@ -80,8 +85,10 @@ struct GuidingSample {
       : weight(weight) {
     const Point2& tp = toSphericalCoordinates(localWo);
 
-    theta    = tp.x;
-    phi      = tp.y;
+    theta = tp.x;
+    phi   = tp.y;
+    GMM_CHECK(tp.x);
+    GMM_CHECK(tp.y);
     position = its.p;
     normal   = its.geoFrame.n;
   }
@@ -154,6 +161,7 @@ struct SHGuidingSampler : public LocalGuidingSamplerBase {
 
   SHGuidingSampler(const Intersection& its, Sampler* sampler)
       : LocalGuidingSamplerBase(its, sampler), shvec(bands) {
+    sample_mutex = new Mutex();
     shvec.addOffset(-shvec.findMinimum(16) + 0.1);
     shvec.normalize();
   }
@@ -163,7 +171,7 @@ struct SHGuidingSampler : public LocalGuidingSamplerBase {
   /// Project the sample as a delta-distribution onto the shvec
   /// Note: the samples should be local sample
   virtual void addSample(const GuidingSample& sample) {
-    std::scoped_lock<std::mutex> lock(sample_mutex);
+    LockGuard lock(sample_mutex);
 
     shvec.addDelta(sample.weight, sample.theta, sample.phi);
     shvec.normalize();
@@ -177,7 +185,7 @@ struct SHGuidingSampler : public LocalGuidingSamplerBase {
   /// Calculate the PDF given a DirectionSamplingRecord from e.g., direct
   /// lighting.
   virtual Float pdf(const BSDFSamplingRecord& dRec) {
-    std::scoped_lock<std::mutex> lock(sample_mutex);
+    LockGuard lock(sample_mutex);
 
     // SLog(EError, "PDF cannot be acquired in SHGuidingSampler");
     // TODO: this method is not exactly correct
@@ -187,7 +195,7 @@ struct SHGuidingSampler : public LocalGuidingSamplerBase {
   /// Provide exactly the same interface as bsdf->sample
   virtual Spectrum sample(BSDFSamplingRecord& bRec, Float& outPdf,
                           const Point2& sample) {
-    std::scoped_lock<std::mutex> lock(sample_mutex);
+    LockGuard lock(sample_mutex);
 
     const BSDF* bsdf    = its.getBSDF();
     auto&       sampler = getSHSamplerInstance();
@@ -212,28 +220,30 @@ struct SHGuidingSampler : public LocalGuidingSamplerBase {
 
  public:
   SHVector   shvec;
-  std::mutex sample_mutex;
+  ref<Mutex> sample_mutex;
 };
 
 struct GMMGuidingSampler : public LocalGuidingSamplerBase {
   GMMGuidingSampler(const Intersection& its, Sampler* sampler)
-      : LocalGuidingSamplerBase(its, sampler) {}
+      : LocalGuidingSamplerBase(its, sampler), sample_mutex(new Mutex()) {}
   virtual ~GMMGuidingSampler() {}
 
   virtual void addSample(const GuidingSample& sample) {
-    std::scoped_lock<std::mutex> lock(sample_mutex);
+    LockGuard lock(sample_mutex);
     /* No area-preserving transformation for now */
+    GMM_CHECK(sample.theta);
+    GMM_CHECK(sample.phi);
     gmm.addBatchedSample(Vector2{sample.theta, sample.phi}, sample.weight);
   }
 
   virtual void addSample(const std::vector<GuidingSample>& samples) {
-    std::scoped_lock<std::mutex> lock(sample_mutex);
+    LockGuard lock(sample_mutex);
     for (auto& sample : samples)
       gmm.addBatchedSample(Vector2{sample.theta, sample.phi}, sample.weight);
   }
 
   virtual Float pdf(const BSDFSamplingRecord& dRec) {
-    std::scoped_lock<std::mutex> lock(sample_mutex);
+    LockGuard lock(sample_mutex);
 
     auto uv = toSphericalCoordinates(dRec.wo);
     return gmm.pdf(Vector2{uv.x, uv.y});
@@ -241,10 +251,17 @@ struct GMMGuidingSampler : public LocalGuidingSamplerBase {
 
   virtual Spectrum sample(BSDFSamplingRecord& bRec, Float& outPdf,
                           const Point2& sample) {
-    std::scoped_lock<std::mutex> lock(sample_mutex);
+    LockGuard lock(sample_mutex);
 
     const BSDF* bsdf    = its.getBSDF();
     auto        sample_ = gmm.sample(Vector2{sample.x, sample.y}, outPdf);
+
+    while (!(sample.x >= 0 && sample.x <= M_PI / 2 && sample_.y >= 0 &&
+             sample_.y <= 2 * M_PI))
+      sample_ = gmm.sample(Vector2{sample.x, sample.y}, outPdf);
+    // outPdf    = outPdf / (abs(sin(sample_.x)) * 2 * M_PI * M_PI);
+    assert(outPdf >= 0);
+
     // The transformed result lies on local coordinate
     bRec.wo = sphericalDirection(sample_.x, sample_.y);
 
@@ -253,9 +270,9 @@ struct GMMGuidingSampler : public LocalGuidingSamplerBase {
   }
 
  public:
-  std::mutex sample_mutex;
+  ref<Mutex> sample_mutex;
 
-  GMM::GaussianMixtureModel<2, 5> gmm;
+  GMM::GaussianMixtureModel<2, 1> gmm;
 };
 
 /**
@@ -280,7 +297,11 @@ class SpatialGuidingSampler : public Object {
   using LocalSamplerType = _LocalSamplerType;
 
   using STree = UnsafeDynamicOctree<GuidingSample>;
-  using DTree = UnsafeDynamicOctree<LocalSamplerType>;
+  using DTree = UnsafeDynamicOctree<LocalSamplerType*>; /* store a pointer to
+                                                           avoid copying */
+  /// mem resource for storing samples
+  std::pmr::monotonic_buffer_resource               m_mem_resource{};
+  std::pmr::polymorphic_allocator<LocalSamplerType> allocator{&m_mem_resource};
 
   /// Phases
   enum EOpVariant {
@@ -298,7 +319,7 @@ class SpatialGuidingSampler : public Object {
       : m_cfg(cfg),
         m_stree(cfg.scene.getAABB()),
         m_dtree(cfg.scene.getAABB()) {}
-  virtual ~SpatialGuidingSampler() {}
+  virtual ~SpatialGuidingSampler() { m_mem_resource.release(); }
   SpatialGuidingSampler(const SpatialGuidingSampler&)           = delete;
   SpatialGuidingSampler(SpatialGuidingSampler&&)                = delete;
   SpatialGuidingSampler operator=(const SpatialGuidingSampler&) = delete;
@@ -321,12 +342,12 @@ class SpatialGuidingSampler : public Object {
       // Search DTree to find adjacent distributions
       m_dtree.searchSphere(
           BSphere(sample.position, m_cfg.m_search_radius),
-          [&](LocalSamplerType& lsampler) {
-            if (distance(lsampler.getPosition(), sample.position) >
+          [&](LocalSamplerType* lsampler) {
+            if (distance(lsampler->getPosition(), sample.position) >
                 m_cfg.m_search_radius)
               return;
             hasDist = true;
-            lsampler.addSample(sample);
+            lsampler->addSample(sample);
           });
     }
 
@@ -353,26 +374,26 @@ class SpatialGuidingSampler : public Object {
                                                   Sampler*            sampler) {
     const Point&  position      = its.p;
     const Normal& normal        = its.geoFrame.n;
-    auto          valueFunction = [&](const LocalSamplerType& lsampler) {
-      return pow(distance(position, lsampler.getPosition()), 2) /
+    auto          valueFunction = [&](const LocalSamplerType* lsampler) {
+      return pow(distance(position, lsampler->getPosition()), 2) /
                  m_cfg.m_search_radius +
-             2 * sqrt(1 -
-                               std::min(1 - Epsilon, dot(normal, lsampler.getNormal())));
+             2 * sqrt(1 - std::min(1 - Epsilon,
+                                            dot(normal, lsampler->getNormal())));
     };
 
     bool  hasSampler = false;
     Float value      = 1e9;
 
     LocalSamplerType* resultSampler{nullptr};
-    auto              dTreeKernel = [&](LocalSamplerType& lsampler) {
-      if (distance(lsampler.getPosition(), position) > m_cfg.m_search_radius)
+    auto              dTreeKernel = [&](LocalSamplerType* lsampler) {
+      if (distance(lsampler->getPosition(), position) > m_cfg.m_search_radius)
         return;
       Float value_ = valueFunction(lsampler);
       assert(!std::isnan(value_));
       hasSampler = true;
       if (value_ < value) {
         value         = value_;
-        resultSampler = &lsampler;
+        resultSampler = lsampler;
       }
     };
 
@@ -384,14 +405,15 @@ class SpatialGuidingSampler : public Object {
       return resultSampler;
     } else {
       // else, build a new local sampler here
-      // create a new samplerData
-      auto lsampler = LocalSamplerType(its, sampler);
+      // create a new sampler
+      auto* lsampler =
+          allocator.template new_object<LocalSamplerType>(its, sampler);
 
       // add neighboring samples to this position
       bool hasSample   = false;
       auto sTreeKernel = [&](const GuidingSample& sample) {
         hasSample = true;
-        lsampler.addSample(sample);
+        lsampler->addSample(sample);
       };
 
       m_stree.searchSphere(BSphere(position, m_cfg.m_search_radius),
@@ -400,7 +422,7 @@ class SpatialGuidingSampler : public Object {
         m_dtree.insert(lsampler, AABB{position});
         ++m_num_dist;
         // search the tree again to acquire the samplerData
-        auto result = acquireSampler(its, sampler);
+        auto result = std::optional<LocalSamplerType*>(lsampler);
         assert(result.has_value());
         return result;
       } else {
